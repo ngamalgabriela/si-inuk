@@ -1,0 +1,291 @@
+@import "tailwindcss";
+
+:root {
+  --background: #f8fbff;
+  --foreground: #0f172a;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+.leaflet-container {
+  height: 100%;
+  width: 100%;
+  z-index: 0;
+}
+
+body {
+  background:
+    radial-gradient(circle at top left, rgba(59, 130, 246, 0.12), transparent 30%),
+    radial-gradient(circle at bottom right, rgba(14, 165, 233, 0.12), transparent 25%),
+    var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+::selection {
+  background: rgba(59, 130, 246, 0.2);
+}
+
+.si-inuk-scene {
+  position: relative;
+  height: 108px;
+  margin-top: 14px;
+  overflow: hidden;
+  border-bottom: 1px solid rgba(165, 243, 252, 0.2);
+}
+
+.si-inuk-scene::after {
+  position: absolute;
+  right: 4%;
+  bottom: 0;
+  left: 4%;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(103, 232, 249, 0.55), transparent);
+  content: "";
+}
+
+.si-inuk-character {
+  position: absolute;
+  bottom: 18px;
+  left: 18%;
+  width: 48px;
+  height: 86px;
+  animation: si-inuk-character-breathe 3.4s ease-in-out infinite;
+}
+
+.si-inuk-head {
+  position: absolute;
+  top: 0;
+  left: 13px;
+  width: 23px;
+  height: 23px;
+  border: 2px solid #dbeafe;
+  border-radius: 999px;
+  background: #5b76e8;
+  box-shadow: 0 0 16px rgba(125, 211, 252, 0.22);
+}
+
+.si-inuk-head::after {
+  position: absolute;
+  right: 4px;
+  bottom: 6px;
+  width: 4px;
+  height: 2px;
+  border-radius: 999px;
+  background: #dbeafe;
+  content: "";
+}
+
+.si-inuk-body {
+  position: absolute;
+  top: 26px;
+  left: 8px;
+  width: 34px;
+  height: 54px;
+  border: 2px solid #bfdbfe;
+  border-radius: 15px 15px 8px 8px;
+  background: linear-gradient(160deg, #1d4ed8, #0891b2);
+}
+
+.si-inuk-body::after {
+  position: absolute;
+  top: 12px;
+  left: 11px;
+  width: 9px;
+  height: 18px;
+  border: 1px solid rgba(224, 242, 254, 0.8);
+  border-radius: 2px;
+  content: "";
+}
+
+.si-inuk-arm {
+  position: absolute;
+  top: 31px;
+  z-index: 2;
+  width: 9px;
+  height: 40px;
+  border-radius: 999px;
+  background: #7dd3fc;
+  transform-origin: top center;
+}
+
+.si-inuk-arm-left {
+  left: 5px;
+  transform: rotate(28deg);
+}
+
+.si-inuk-arm-right {
+  right: 4px;
+  animation: si-inuk-arm-open 3.4s ease-in-out infinite;
+  transform: rotate(48deg);
+}
+
+.si-inuk-bag {
+  position: absolute;
+  right: 17%;
+  bottom: 17px;
+  width: 86px;
+  height: 54px;
+}
+
+.si-inuk-bag-body {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 86px;
+  height: 39px;
+  border: 2px solid #a5f3fc;
+  border-radius: 7px;
+  background: #0e7490;
+  box-shadow: 0 9px 20px rgba(2, 12, 35, 0.25);
+}
+
+.si-inuk-bag-body::after {
+  position: absolute;
+  top: 8px;
+  left: 35px;
+  width: 16px;
+  height: 8px;
+  border: 2px solid #cffafe;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
+  content: "";
+}
+
+.si-inuk-bag-lid {
+  position: absolute;
+  right: 0;
+  bottom: 31px;
+  z-index: 4;
+  width: 86px;
+  height: 18px;
+  border: 2px solid #a5f3fc;
+  border-radius: 7px 7px 3px 3px;
+  background: #155e75;
+  transform-origin: bottom right;
+  animation: si-inuk-bag-open 3.4s ease-in-out infinite;
+}
+
+.si-inuk-data-card {
+  position: absolute;
+  bottom: 24px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 35px;
+  height: 25px;
+  border: 1px solid rgba(255, 255, 255, 0.85);
+  border-radius: 4px;
+  background: #f8fafc;
+  color: #1e40af;
+  font-size: 7px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  box-shadow: 0 4px 12px rgba(2, 12, 35, 0.18);
+}
+
+.si-inuk-data-card-one {
+  left: 8px;
+  animation: si-inuk-card-one 3.4s ease-in-out infinite;
+}
+
+.si-inuk-data-card-two {
+  left: 27px;
+  animation: si-inuk-card-two 3.4s ease-in-out 0.15s infinite;
+}
+
+.si-inuk-data-card-three {
+  left: 48px;
+  animation: si-inuk-card-three 3.4s ease-in-out 0.3s infinite;
+}
+
+.si-inuk-spark {
+  position: absolute;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: #a5f3fc;
+  box-shadow: 0 0 12px #67e8f9;
+}
+
+.si-inuk-spark-one {
+  top: 28px;
+  right: 11%;
+  animation: si-inuk-spark-float 2.2s ease-in-out infinite;
+}
+
+.si-inuk-spark-two {
+  top: 68px;
+  right: 5%;
+  animation: si-inuk-spark-float 2.2s ease-in-out 0.8s infinite;
+}
+
+.si-inuk-scene-label {
+  position: absolute;
+  right: 2px;
+  bottom: 6px;
+  color: rgba(207, 250, 254, 0.72);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+}
+
+@keyframes si-inuk-character-breathe {
+  0%, 100% { transform: translateY(1px); }
+  50% { transform: translateY(-2px); }
+}
+
+@keyframes si-inuk-arm-open {
+  0%, 18% { transform: rotate(48deg); }
+  42%, 68% { transform: rotate(76deg); }
+  88%, 100% { transform: rotate(48deg); }
+}
+
+@keyframes si-inuk-bag-open {
+  0%, 18% { transform: rotate(0deg); }
+  42%, 68% { transform: rotate(-32deg); }
+  88%, 100% { transform: rotate(0deg); }
+}
+
+@keyframes si-inuk-card-one {
+  0%, 18% { transform: translateY(8px) rotate(-8deg); opacity: 0; }
+  38%, 78% { transform: translateY(-20px) rotate(-8deg); opacity: 1; }
+  94%, 100% { transform: translateY(8px) rotate(-8deg); opacity: 0; }
+}
+
+@keyframes si-inuk-card-two {
+  0%, 24% { transform: translateY(8px) rotate(2deg); opacity: 0; }
+  44%, 82% { transform: translateY(-32px) rotate(2deg); opacity: 1; }
+  96%, 100% { transform: translateY(8px) rotate(2deg); opacity: 0; }
+}
+
+@keyframes si-inuk-card-three {
+  0%, 30% { transform: translateY(8px) rotate(9deg); opacity: 0; }
+  50%, 86% { transform: translateY(-18px) rotate(9deg); opacity: 1; }
+  98%, 100% { transform: translateY(8px) rotate(9deg); opacity: 0; }
+}
+
+@keyframes si-inuk-spark-float {
+  0%, 100% { transform: translateY(4px); opacity: 0.3; }
+  50% { transform: translateY(-8px); opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .si-inuk-character,
+  .si-inuk-arm-right,
+  .si-inuk-bag-lid,
+  .si-inuk-data-card,
+  .si-inuk-spark {
+    animation: none;
+  }
+}

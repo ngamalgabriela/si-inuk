@@ -1,0 +1,282 @@
+"use client";
+
+import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { buildLksArchiveFromSession } from "./daftar/_lib/attachments";
+import {
+  getLksSummary,
+  getWorkflowStatusLabel,
+  type LksRecord,
+} from "./_lib/lks";
+import { getSessionSnapshot } from "./daftar/_lib/persistence";
+
+type LksData = LksRecord;
+
+export default function LksPage() {
+  const router = useRouter();
+
+  const [lks, setLks] = useState<LksData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadLks() {
+      try {
+        setLoading(true);
+        setError(null);
+
+        const rawIdentity = getSessionSnapshot("si-inuk-lks-identitas");
+        const rawTdd = getSessionSnapshot("si-inuk-lks-tanda-daftar");
+        const identity = rawIdentity ? JSON.parse(rawIdentity) as Record<string, string> : null;
+        const tdd = rawTdd ? JSON.parse(rawTdd) as Record<string, string> : null;
+        const lksData: LksRecord | null = identity?.nama_lks
+          ? {
+              id: "local-lks",
+              nama_lks: identity.nama_lks,
+              kecamatan: identity.kecamatan,
+              desa: identity.desa,
+              alamat: identity.alamat,
+              status_lks: identity.status_lks || "Aktif",
+              workflow_status: tdd?.status_pengajuan === "DIAJUKAN" ? "menunggu_verifikasi" : "draft",
+              updated_at: new Date().toISOString(),
+            }
+          : null;
+
+        if (!cancelled) {
+          setLks(lksData);
+          if (!lksData) {
+            setError("Belum ada data LKS di browser ini.");
+          }
+          setLoading(false);
+        }
+      } catch (loadError) {
+        if (!cancelled) {
+          setError(
+            loadError instanceof Error
+              ? loadError.message
+              : "Gagal mengambil data LKS.",
+          );
+          setLoading(false);
+        }
+      }
+    }
+
+    void loadLks();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [router]);
+
+  const downloadLksFile = async (data: LksData) => {
+    const filenameBase =
+      (data.nama_lks || "lks")
+        .trim()
+        .replace(/\s+/g, "-")
+        .toLowerCase() || "lks";
+
+    try {
+      const blob = await buildLksArchiveFromSession(data.nama_lks || "lks");
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+
+      anchor.href = url;
+      anchor.download = `${filenameBase}.zip`;
+
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+
+      URL.revokeObjectURL(url);
+    } catch {
+      alert("Tidak ada file unggahan yang dapat diunduh untuk LKS ini.");
+    }
+  };
+
+  return (
+    <main className="min-h-screen bg-slate-50 px-4 py-8 md:px-8">
+      <div className="mx-auto max-w-6xl">
+        <div className="mb-8 flex flex-col gap-5 md:flex-row md:items-end md:justify-between">
+          <div>
+            <p className="text-sm font-semibold uppercase tracking-[0.2em] text-blue-700">
+              SI-INUK / LKS
+            </p>
+
+            <h1 className="mt-2 text-3xl font-bold text-slate-950 md:text-4xl">
+              Data LKS Saya
+            </h1>
+
+            <p className="mt-3 text-sm leading-6 text-slate-600">
+              Halaman ini menampilkan data LKS yang terhubung dengan akun yang
+              sedang login.
+            </p>
+          </div>
+
+          <Link
+            href="/"
+            className="inline-flex w-fit rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+          >
+            ← Kembali ke Dashboard
+          </Link>
+
+          <Link
+            href="/lks/daftar"
+            className="inline-flex w-fit rounded-xl bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800"
+          >
+            + Tambah LKS
+          </Link>
+        </div>
+
+        <section className="mb-6 rounded-2xl border border-blue-100 bg-blue-50 p-5">
+          <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-blue-700">
+                Akses LKS
+              </p>
+
+              <h2 className="mt-1 text-xl font-bold text-slate-900">
+                Data LKS terhubung ke akun
+              </h2>
+            </div>
+
+            <span className="inline-flex w-fit rounded-full bg-white px-3 py-1 text-xs font-semibold text-blue-700 ring-1 ring-blue-200">
+              Terproteksi RLS
+            </span>
+          </div>
+        </section>
+
+        <section className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm md:p-8">
+          {loading ? (
+            <div className="rounded-xl border border-dashed border-slate-300 px-6 py-12 text-center">
+              <p className="text-sm text-slate-500">
+                Memuat data LKS...
+              </p>
+            </div>
+          ) : error ? (
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-6 py-8">
+              <p className="text-sm font-semibold text-amber-800">
+                {error}
+              </p>
+
+              <p className="mt-2 text-sm text-amber-700">
+                Pastikan akun LKS sudah memiliki hubungan pada
+                <code className="mx-1 rounded bg-amber-100 px-1">
+                  profiles.lks_id
+                </code>
+                .
+              </p>
+            </div>
+          ) : lks ? (
+            <>
+              <div className="flex flex-col gap-4 border-b border-slate-100 pb-5 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">
+                    LKS terhubung
+                  </p>
+
+                  <h2 className="mt-2 text-xl font-bold text-slate-950">
+                    {getLksSummary(lks)}
+                  </h2>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex rounded-full bg-sky-100 px-2.5 py-1 text-xs font-semibold text-sky-700">
+                    {getWorkflowStatusLabel(
+                      lks.workflow_status || lks.status_lks,
+                    )}
+                  </span>
+
+                  <Link
+                    href="/lks/daftar"
+                    className="inline-flex w-fit rounded-xl bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800"
+                  >
+                    Lihat / Ubah
+                  </Link>
+                </div>
+              </div>
+
+              <div className="mt-6 overflow-x-auto">
+                <table className="w-full min-w-[680px] text-left text-sm">
+                  <thead>
+                    <tr className="border-b border-slate-100 text-xs uppercase tracking-[0.12em] text-slate-400">
+                      <th className="pb-3 font-semibold">Nama LKS</th>
+                      <th className="pb-3 font-semibold">Wilayah</th>
+                      <th className="pb-3 font-semibold">Status</th>
+                      <th className="pb-3 font-semibold">Alamat</th>
+                      <th className="pb-3 text-right font-semibold">
+                        Aksi
+                      </th>
+                    </tr>
+                  </thead>
+
+                  <tbody>
+                    <tr className="border-b border-slate-100">
+                      <td className="py-5 font-semibold text-slate-800">
+                        {getLksSummary(lks)}
+                      </td>
+
+                      <td className="py-5 text-slate-600">
+                        {lks.desa || "-"}, {lks.kecamatan || "-"}
+                        <br />
+                        <span className="text-xs text-slate-400">
+                          Manggarai Barat
+                        </span>
+                      </td>
+
+                      <td className="py-5">
+                        <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+                          {lks.status_lks ||
+                            getWorkflowStatusLabel(lks.workflow_status)}
+                        </span>
+                      </td>
+
+                      <td className="max-w-xs py-5 text-slate-600">
+                        {lks.alamat || "Alamat belum diisi"}
+                      </td>
+
+                      <td className="py-5 text-right">
+                        <div className="flex flex-col items-end gap-2">
+                          <button
+                            type="button"
+                            onClick={() => router.push("/lks/daftar")}
+                            className="font-semibold text-blue-700 hover:text-blue-800"
+                          >
+                            Lihat / Ubah
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => void downloadLksFile(lks)}
+                            className="font-semibold text-emerald-700 hover:text-emerald-800"
+                          >
+                            Download ZIP LKS
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </>
+          ) : (
+            <div className="rounded-xl border border-dashed border-slate-300 px-6 py-12 text-center">
+              <p className="text-sm text-slate-500">
+                Belum ada data LKS yang terhubung dengan akun ini.
+              </p>
+
+              <Link
+                href="/lks/daftar"
+                className="mt-4 inline-flex text-sm font-semibold text-blue-700 hover:text-blue-800"
+              >
+                Mulai pendataan LKS →
+              </Link>
+            </div>
+          )}
+        </section>
+      </div>
+    </main>
+  );
+}

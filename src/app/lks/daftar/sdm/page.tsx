@@ -53,10 +53,28 @@ export default function SdmLksPage() {
         alert(`Gagal memuat data SDM dari Supabase: ${error.message}`);
       } else if (data) {
         setBackendData({
-          ...(typeof data.nama_pimpinan === "string" ? { nama_pimpinan: data.nama_pimpinan } : {}),
-          ...(typeof data.email === "string" ? { email: data.email } : {}),
-          ...(data.data_sdm_storage_path ? { data_sdm: data.data_sdm_file_name || "", _data_sdm_file_name: data.data_sdm_file_name || "", _data_sdm_storage_path: data.data_sdm_storage_path } : {}),
-          ...(data.sertifikasi_storage_path ? { sdm_sertifikasi: data.sertifikasi_file_name || "", _sertifikasi_file_name: data.sertifikasi_file_name || "", _sertifikasi_storage_path: data.sertifikasi_storage_path } : {}),
+          ...(typeof data.nama_pimpinan === "string"
+            ? { nama_pimpinan: data.nama_pimpinan }
+            : {}),
+          ...(typeof data.email === "string"
+            ? { email: data.email }
+            : {}),
+          ...(data.data_sdm_storage_path
+            ? {
+                data_sdm: data.data_sdm_file_name || "",
+                _data_sdm_file_name: data.data_sdm_file_name || "",
+                _data_sdm_storage_path: data.data_sdm_storage_path,
+              }
+            : {}),
+          ...(data.sertifikasi_storage_path
+            ? {
+                sdm_sertifikasi: data.sertifikasi_file_name || "",
+                _sertifikasi_file_name:
+                  data.sertifikasi_file_name || "",
+                _sertifikasi_storage_path:
+                  data.sertifikasi_storage_path,
+              }
+            : {}),
         });
       }
 
@@ -64,6 +82,7 @@ export default function SdmLksPage() {
     }
 
     void loadSdm();
+
     return () => {
       cancelled = true;
     };
@@ -71,6 +90,7 @@ export default function SdmLksPage() {
 
   const saveData = async (form: HTMLFormElement) => {
     if (isSaving.current) return false;
+
     if (!lksId) {
       alert("ID LKS belum tersedia. Simpan Identitas LKS terlebih dahulu.");
       return false;
@@ -80,43 +100,69 @@ export default function SdmLksPage() {
     setSaving(true);
 
     try {
-    const formData = new FormData(form);
-    const data: Record<string, string> = { ...savedData };
+      const formData = new FormData(form);
+      const data: Record<string, string> = { ...savedData };
 
-    for (const [key, value] of Array.from(formData.entries())) {
-      if (value instanceof File) {
-        data[key] = value.name;
-        if (value.size > 0) {
-          await saveFileAttachment("sdm", key, value);
+      for (const [key, value] of Array.from(formData.entries())) {
+        if (value instanceof File) {
+          data[key] = value.name;
+
+          if (value.size > 0) {
+            const existingPath = data[`_${key}_storage_path`];
+            const existingName = data[`_${key}_file_name`];
+
+            if (!existingPath || existingName !== value.name) {
+              const storagePath = await saveFileAttachment(
+                "sdm",
+                key,
+                value,
+              );
+
+              data[`_${key}_file_name`] = value.name;
+              data[`_${key}_storage_path`] = storagePath;
+            }
+          }
+        } else {
+          data[key] = value;
         }
-      } else {
-        data[key] = value;
       }
-    }
 
-    const { error } = await createClient().from("lks_sdm").upsert(
-      {
-        lks_id: lksId,
-        nama_pimpinan: data.nama_pimpinan || null,
-        email: data.email || null,
-        data_sdm_file_name: data._data_sdm_storage_path ? data._data_sdm_file_name : null,
-        data_sdm_storage_path: data._data_sdm_storage_path || null,
-        sertifikasi_file_name: data._sertifikasi_storage_path ? data._sertifikasi_file_name : null,
-        sertifikasi_storage_path: data._sertifikasi_storage_path || null,
-      },
-      { onConflict: "lks_id" },
-    );
+      const { error } = await createClient()
+        .from("lks_sdm")
+        .upsert(
+          {
+            lks_id: lksId,
+            nama_pimpinan: data.nama_pimpinan || null,
+            email: data.email || null,
+            data_sdm_file_name: data._data_sdm_storage_path
+              ? data._data_sdm_file_name
+              : null,
+            data_sdm_storage_path:
+              data._data_sdm_storage_path || null,
+            sertifikasi_file_name: data._sertifikasi_storage_path
+              ? data._sertifikasi_file_name
+              : null,
+            sertifikasi_storage_path:
+              data._sertifikasi_storage_path || null,
+          },
+          { onConflict: "lks_id" },
+        );
 
-    if (error) {
-      alert(`Gagal menyimpan SDM ke Supabase: ${error.message}`);
-      return false;
-    }
+      if (error) {
+        alert(`Gagal menyimpan SDM ke Supabase: ${error.message}`);
+        return false;
+      }
 
-    writeSessionData("si-inuk-lks-sdm", data);
-    setBackendData(data);
-    return true;
+      writeSessionData("si-inuk-lks-sdm", data);
+      setBackendData(data);
+
+      return true;
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Terjadi kesalahan yang tidak diketahui.";
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Terjadi kesalahan yang tidak diketahui.";
+
       alert(`Gagal menyimpan SDM: ${message}`);
       return false;
     } finally {
@@ -129,9 +175,10 @@ export default function SdmLksPage() {
     e.preventDefault();
 
     const saved = await saveData(e.currentTarget);
+
     if (!saved) return;
 
-    alert("Data SDM tersimpan di Supabase. File lampiran masih tersimpan di browser.");
+    alert("Data SDM dan File lampiran berhasil tersimpan di supabase.");
   };
 
   const handleNext = async () => {
@@ -146,6 +193,7 @@ export default function SdmLksPage() {
     }
 
     const saved = await saveData(form);
+
     if (!saved) return;
 
     router.push("/lks/daftar/pm");
@@ -175,6 +223,7 @@ export default function SdmLksPage() {
             <h2 className="text-xl font-semibold text-slate-900">
               Data Pimpinan LKS
             </h2>
+
             <p className="mt-1 text-sm text-slate-500">
               Diisi oleh LKS sesuai dengan pimpinan yang tercantum dalam
               struktur kepengurusan.
@@ -188,6 +237,7 @@ export default function SdmLksPage() {
                 >
                   Nama Ketua/Direktur/Kepala/Pimpinan
                 </label>
+
                 <input
                   id="nama_pimpinan"
                   name="nama_pimpinan"
@@ -206,6 +256,7 @@ export default function SdmLksPage() {
                 >
                   Email
                 </label>
+
                 <input
                   id="email"
                   name="email"
@@ -223,6 +274,7 @@ export default function SdmLksPage() {
             <h2 className="text-xl font-semibold text-slate-900">
               Data SDM / Struktur Kepengurusan LKS
             </h2>
+
             <p className="mt-1 text-sm text-slate-500">
               Unggah dokumen yang memuat data SDM atau struktur kepengurusan
               LKS untuk mendukung kebutuhan administrasi dan Tanda Daftar
@@ -236,6 +288,7 @@ export default function SdmLksPage() {
               >
                 Upload Data SDM/Struktur Kepengurusan LKS
               </label>
+
               <input
                 id="data_sdm"
                 name="data_sdm"
@@ -247,11 +300,16 @@ export default function SdmLksPage() {
                 }}
                 className="mt-2 block w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm"
               />
+
               {savedData.data_sdm && (
                 <p className="mt-2 text-sm text-slate-600">
-                  Data SDM / Struktur tersimpan: <span className="font-medium text-slate-900">{savedData.data_sdm}</span>
+                  Data SDM / Struktur tersimpan:{" "}
+                  <span className="font-medium text-slate-900">
+                    {savedData.data_sdm}
+                  </span>
                 </p>
               )}
+
               <p className="mt-2 text-sm text-slate-500">
                 Dokumen digunakan sebagai data pendukung struktur
                 kepengurusan LKS.
@@ -270,6 +328,7 @@ export default function SdmLksPage() {
                 >
                   Upload SDM Sertifikasi
                 </label>
+
                 <input
                   id="sdm_sertifikasi"
                   name="sdm_sertifikasi"
@@ -278,11 +337,16 @@ export default function SdmLksPage() {
                   accept=".pdf,.xls,.xlsx,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                   className="mt-2 block w-full rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm"
                 />
+
                 {savedData.sdm_sertifikasi && (
                   <p className="mt-2 text-sm text-slate-600">
-                    SDM Sertifikasi tersimpan: <span className="font-medium text-slate-900">{savedData.sdm_sertifikasi}</span>
+                    SDM Sertifikasi tersimpan:{" "}
+                    <span className="font-medium text-slate-900">
+                      {savedData.sdm_sertifikasi}
+                    </span>
                   </p>
                 )}
+
                 <p className="mt-2 text-sm text-slate-500">
                   Unggah dokumen sertifikasi SDM dalam format PDF atau Excel.
                 </p>
@@ -292,6 +356,7 @@ export default function SdmLksPage() {
 
           <section className="rounded-xl border border-amber-200 bg-amber-50 p-5">
             <p className="font-medium text-amber-900">Catatan</p>
+
             <p className="mt-1 text-sm text-amber-800">
               Data SDM pada modul ini tidak dicatat satu per satu berdasarkan
               nama personel. Informasi struktur kepengurusan disampaikan

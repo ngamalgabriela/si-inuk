@@ -688,7 +688,7 @@ export default function PenerimaManfaatLksPage() {
     if (!saved) return;
 
     alert(
-      "Data PM tersimpan di Supabase. File BNBA masih tersimpan di browser.",
+     "Data PM dan file BNBA berhasil tersimpan di Supabase.",
     );
   };
 

@@ -76,7 +76,8 @@ const itemsAwal: SarprasItem[] = [
   {
     id: "alat_transportasi",
     judul: "Alat Transportasi",
-    deskripsi: "Motor, mobil, atau alat transportasi lain yang dimiliki/digunakan LKS.",
+    deskripsi:
+      "Motor, mobil, atau alat transportasi lain yang dimiliki/digunakan LKS.",
     status: undefined,
     file: null,
   },
@@ -94,6 +95,7 @@ export default function SarprasLksPage() {
   const router = useRouter();
   const lksId = getCurrentLksId();
   const isSaving = useRef(false);
+
   const [saving, setSaving] = useState(false);
   const [backendLoaded, setBackendLoaded] = useState(false);
 
@@ -135,6 +137,7 @@ export default function SarprasLksPage() {
 
       const savedItem = savedSource.find((entry) => {
         if (!entry || typeof entry !== "object") return false;
+
         return (entry as Record<string, unknown>).item === item.id;
       });
 
@@ -172,27 +175,39 @@ export default function SarprasLksPage() {
         .eq("lks_id", lksId);
 
       if (cancelled) return;
+
       if (error) {
         alert(`Gagal memuat data Sarpras dari Supabase: ${error.message}`);
       } else if (data) {
         const rows = new Map(data.map((row) => [row.item, row]));
-        setItems((current) => current.map((item) => {
-          const row = rows.get(item.id);
-          if (!row) return item;
-          return {
-            ...item,
-            status: row.status === "ADA" || row.status === "TIDAK ADA" ? row.status : item.status,
-            fileName: row.storage_path ? row.file_name || "" : item.fileName,
-            storagePath: row.storage_path || undefined,
-            storedFileName: row.file_name || undefined,
-          };
-        }));
+
+        setItems((current) =>
+          current.map((item) => {
+            const row = rows.get(item.id);
+
+            if (!row) return item;
+
+            return {
+              ...item,
+              status:
+                row.status === "ADA" || row.status === "TIDAK ADA"
+                  ? row.status
+                  : item.status,
+              fileName: row.storage_path
+                ? row.file_name || ""
+                : item.fileName,
+              storagePath: row.storage_path || undefined,
+              storedFileName: row.file_name || undefined,
+            };
+          }),
+        );
       }
 
       setBackendLoaded(true);
     }
 
     void loadSarpras();
+
     return () => {
       cancelled = true;
     };
@@ -207,11 +222,13 @@ export default function SarprasLksPage() {
               status,
               file: status === "TIDAK ADA" ? null : item.file,
               fileName: status === "TIDAK ADA" ? "" : item.fileName,
-              storagePath: status === "TIDAK ADA" ? undefined : item.storagePath,
-              storedFileName: status === "TIDAK ADA" ? undefined : item.storedFileName,
+              storagePath:
+                status === "TIDAK ADA" ? undefined : item.storagePath,
+              storedFileName:
+                status === "TIDAK ADA" ? undefined : item.storedFileName,
             }
-          : item
-      )
+          : item,
+      ),
     );
   };
 
@@ -224,57 +241,16 @@ export default function SarprasLksPage() {
               file,
               fileName: file?.name || item.fileName || "",
             }
-          : item
-      )
+          : item,
+      ),
     );
-  };
-
-  const buildData = async () => {
-    const dokumentasiWajib = await Promise.all(
-      items.slice(0, 3).map(async (item) => {
-        if (item.file) {
-          await saveFileAttachment("sarpras", `${item.id}_dokumen`, item.file);
-        }
-
-        return {
-          item: item.id,
-          nama: item.judul,
-          file: item.file?.name || item.fileName || "",
-        };
-      }),
-    );
-
-    const sarprasData = await Promise.all(
-      items.slice(3).map(async (item) => {
-        if (item.status === "ADA" && item.file) {
-          await saveFileAttachment("sarpras", `${item.id}_sarpras`, item.file);
-        }
-
-        return {
-          item: item.id,
-          nama: item.judul,
-          status: item.status || "",
-          file: item.status === "ADA" ? item.file?.name || item.fileName || "" : "",
-        };
-      }),
-    );
-
-    return {
-      dokumentasi_wajib: dokumentasiWajib,
-      sarpras: sarprasData,
-    };
   };
 
   const persistSarpras = async () => {
     if (isSaving.current) return false;
+
     if (!lksId) {
       alert("ID LKS belum tersedia. Simpan Identitas LKS terlebih dahulu.");
-      return false;
-    }
-
-    const pendingStorage = items.find((item) => item.status === "ADA" && !item.storagePath);
-    if (pendingStorage) {
-      alert(`Data ${pendingStorage.judul} belum dapat disimpan ke backend karena file belum tersimpan di Supabase Storage.`);
       return false;
     }
 
@@ -282,17 +258,130 @@ export default function SarprasLksPage() {
     setSaving(true);
 
     try {
-      const localData = await buildData();
+      /*
+       * Upload file baru terlebih dahulu.
+       * Jika file sudah tersimpan dan tidak ada file baru yang dipilih,
+       * gunakan storagePath yang sudah ada sehingga tidak upload ulang.
+       */
+      const processedItems = await Promise.all(
+        items.map(async (item) => {
+          if (item.status === "TIDAK ADA") {
+            return {
+              ...item,
+              file: null,
+              fileName: "",
+              storagePath: undefined,
+              storedFileName: undefined,
+            };
+          }
+
+          if (!item.file) {
+            return item;
+          }
+
+          const isNewFile =
+            !item.storagePath || item.storedFileName !== item.file.name;
+
+          if (!isNewFile) {
+            return item;
+          }
+
+          const isDocumentation =
+            item.id === "tampak_depan" ||
+            item.id === "papan_nama" ||
+            item.id === "foto_pm";
+
+          const storagePath = await saveFileAttachment(
+            "sarpras",
+            isDocumentation
+              ? `${item.id}_dokumen`
+              : `${item.id}_sarpras`,
+            item.file,
+          );
+
+          return {
+            ...item,
+            fileName: item.file.name,
+            storagePath,
+            storedFileName: item.file.name,
+          };
+        }),
+      );
+
+      /*
+       * Pastikan state React juga memiliki storagePath terbaru.
+       * Ini penting agar Simpan Data kedua kali tidak meng-upload ulang.
+       */
+      setItems(processedItems);
+
+      const dokumentasiWajib = processedItems
+        .slice(0, 3)
+        .map((item) => ({
+          item: item.id,
+          nama: item.judul,
+          file: item.fileName || "",
+          storagePath: item.storagePath || "",
+        }));
+
+      const sarprasData = processedItems
+        .slice(3)
+        .map((item) => ({
+          item: item.id,
+          nama: item.judul,
+          status: item.status || "",
+          file: item.status === "ADA" ? item.fileName || "" : "",
+          storagePath:
+            item.status === "ADA" ? item.storagePath || "" : "",
+        }));
+
+      /*
+       * Validasi setelah proses upload.
+       * Dokumentasi wajib harus mempunyai storagePath.
+       * Sarpras dengan status ADA juga harus mempunyai storagePath.
+       */
+      const missingDocumentation = processedItems
+        .slice(0, 3)
+        .find((item) => !item.storagePath);
+
+      if (missingDocumentation) {
+        alert(
+          "Data Sarpras belum dapat disimpan karena file dokumentasi wajib belum tersimpan di Supabase Storage.",
+        );
+        return false;
+      }
+
+      const missingSarprasFile = processedItems
+        .slice(3)
+        .find(
+          (item) =>
+            item.status === "ADA" && !item.storagePath,
+        );
+
+      if (missingSarprasFile) {
+        alert(
+          "Data Sarpras belum dapat disimpan karena file bukti Sarpras belum tersimpan di Supabase Storage.",
+        );
+        return false;
+      }
+
+      const localData = {
+        dokumentasi_wajib: dokumentasiWajib,
+        sarpras: sarprasData,
+      };
+
       writeSessionData("si-inuk-lks-sarpras", localData);
 
-      const rows = items.map((item, index) => ({
+      const rows = processedItems.map((item, index) => ({
         lks_id: lksId,
         item: item.id,
         nama: item.judul,
         status: index < 3 ? null : item.status || null,
-        file_name: item.storagePath ? item.storedFileName || item.fileName || null : null,
+        file_name: item.storagePath
+          ? item.storedFileName || item.fileName || null
+          : null,
         storage_path: item.storagePath || null,
       }));
+
       const { error } = await createClient()
         .from("lks_sarpras")
         .upsert(rows, { onConflict: "lks_id,item" });
@@ -304,7 +393,11 @@ export default function SarprasLksPage() {
 
       return true;
     } catch (error) {
-      const message = error instanceof Error ? error.message : "Terjadi kesalahan yang tidak diketahui.";
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Terjadi kesalahan yang tidak diketahui.";
+
       alert(`Gagal menyimpan Sarpras: ${message}`);
       return false;
     } finally {
@@ -317,9 +410,10 @@ export default function SarprasLksPage() {
     e.preventDefault();
 
     const saved = await persistSarpras();
+
     if (!saved) return;
 
-    alert("Data Sarpras tersimpan di Supabase. File dokumentasi tetap tersimpan di browser.");
+    alert("Data Sarpras dan file dokumentasi berhasil tersimpan di Supabase.");
   };
 
   const handleNext = async () => {
@@ -361,6 +455,7 @@ export default function SarprasLksPage() {
     }
 
     const saved = await persistSarpras();
+
     if (!saved) return;
 
     router.push("/lks/daftar/layanan");
@@ -371,19 +466,26 @@ export default function SarprasLksPage() {
       <div className="mx-auto max-w-6xl">
         <div className="mb-8">
           <p className="text-sm font-medium text-slate-500">SI-INUK</p>
+
           <h1 className="mt-1 text-3xl font-bold text-slate-900">
             Pendaftaran LKS — Sarana dan Prasarana
           </h1>
+
           <p className="mt-2 text-slate-600">
             Data sarana dan prasarana serta dokumentasi pendukung LKS.
           </p>
         </div>
 
-        <form key={backendLoaded ? "backend-loaded" : "local-cache"} onSubmit={handleSubmit} className="space-y-6">
+        <form
+          key={backendLoaded ? "backend-loaded" : "local-cache"}
+          onSubmit={handleSubmit}
+          className="space-y-6"
+        >
           <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-xl font-semibold text-slate-900">
               Dokumentasi Wajib
             </h2>
+
             <p className="mt-2 text-sm text-slate-600">
               Setiap item menggunakan 1 file PDF. PDF dapat memuat beberapa
               foto yang relevan dengan item tersebut.
@@ -417,9 +519,11 @@ export default function SarprasLksPage() {
                     }
                     className="mt-3 block w-full rounded-lg border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700"
                   />
+
                   {item.fileName && (
                     <p className="mt-2 text-sm text-slate-600">
-                      File tersimpan: <span className="font-medium">{item.fileName}</span>
+                      File tersimpan:{" "}
+                      <span className="font-medium">{item.fileName}</span>
                     </p>
                   )}
                 </div>
@@ -431,6 +535,7 @@ export default function SarprasLksPage() {
             <h2 className="text-xl font-semibold text-slate-900">
               Sarana dan Prasarana LKS
             </h2>
+
             <p className="mt-2 text-sm text-slate-600">
               Pilih status setiap komponen. Jika ADA, unggah 1 file PDF yang
               memuat foto-foto yang relevan dengan komponen tersebut.
@@ -470,7 +575,9 @@ export default function SarprasLksPage() {
                         name={item.id}
                         value="TIDAK ADA"
                         checked={item.status === "TIDAK ADA"}
-                        onChange={() => updateStatus(item.id, "TIDAK ADA")}
+                        onChange={() =>
+                          updateStatus(item.id, "TIDAK ADA")
+                        }
                       />
                       TIDAK ADA
                     </label>
@@ -494,14 +601,18 @@ export default function SarprasLksPage() {
                         onChange={(e) =>
                           updateFile(
                             item.id,
-                            e.target.files?.[0] || null
+                            e.target.files?.[0] || null,
                           )
                         }
                         className="mt-2 block w-full rounded-lg border border-slate-300 bg-white px-4 py-3 text-sm text-slate-700"
                       />
+
                       {item.fileName && (
                         <p className="mt-2 text-sm text-slate-600">
-                          File tersimpan: <span className="font-medium">{item.fileName}</span>
+                          File tersimpan:{" "}
+                          <span className="font-medium">
+                            {item.fileName}
+                          </span>
                         </p>
                       )}
 
@@ -522,7 +633,7 @@ export default function SarprasLksPage() {
               disabled={saving}
               className="rounded-lg border border-slate-300 bg-white px-5 py-2.5 font-medium text-slate-700 hover:bg-slate-50"
             >
-              Simpan Data
+              {saving ? "Menyimpan..." : "Simpan Data"}
             </button>
 
             <button
@@ -539,7 +650,7 @@ export default function SarprasLksPage() {
               disabled={saving}
               className="rounded-lg bg-blue-600 px-5 py-2.5 font-medium text-white hover:bg-blue-700"
             >
-              Lanjut ke Layanan
+              {saving ? "Menyimpan..." : "Lanjut ke Layanan"}
             </button>
           </div>
         </form>

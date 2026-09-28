@@ -2,15 +2,20 @@
 
 import { useRouter } from "next/navigation";
 import {
+  useEffect,
+  useRef,
   useState,
   useSyncExternalStore,
   type FormEvent,
 } from "react";
+import { createClient } from "@/lib/supabase/client";
 import { saveFileAttachment } from "../_lib/attachments";
 import {
   getSessionSnapshot,
   subscribeSessionStorage,
+  writeSessionData,
 } from "../_lib/persistence";
+import { getCurrentLksId } from "../_lib/registration";
 
 type StatusSarpras = "ADA" | "TIDAK ADA";
 
@@ -21,6 +26,8 @@ type SarprasItem = {
   status?: StatusSarpras;
   file: File | null;
   fileName?: string;
+  storagePath?: string;
+  storedFileName?: string;
 };
 
 const itemsAwal: SarprasItem[] = [
@@ -85,6 +92,10 @@ const itemsAwal: SarprasItem[] = [
 
 export default function SarprasLksPage() {
   const router = useRouter();
+  const lksId = getCurrentLksId();
+  const isSaving = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const [backendLoaded, setBackendLoaded] = useState(false);
 
   const savedSnapshot = useSyncExternalStore(
     subscribeSessionStorage,
@@ -146,6 +157,47 @@ export default function SarprasLksPage() {
     });
   });
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSarpras() {
+      if (!lksId) {
+        setBackendLoaded(true);
+        return;
+      }
+
+      const { data, error } = await createClient()
+        .from("lks_sarpras")
+        .select("item,nama,status,file_name,storage_path")
+        .eq("lks_id", lksId);
+
+      if (cancelled) return;
+      if (error) {
+        alert(`Gagal memuat data Sarpras dari Supabase: ${error.message}`);
+      } else if (data) {
+        const rows = new Map(data.map((row) => [row.item, row]));
+        setItems((current) => current.map((item) => {
+          const row = rows.get(item.id);
+          if (!row) return item;
+          return {
+            ...item,
+            status: row.status === "ADA" || row.status === "TIDAK ADA" ? row.status : item.status,
+            fileName: row.storage_path ? row.file_name || "" : item.fileName,
+            storagePath: row.storage_path || undefined,
+            storedFileName: row.file_name || undefined,
+          };
+        }));
+      }
+
+      setBackendLoaded(true);
+    }
+
+    void loadSarpras();
+    return () => {
+      cancelled = true;
+    };
+  }, [lksId]);
+
   const updateStatus = (id: string, status: StatusSarpras) => {
     setItems((current) =>
       current.map((item) =>
@@ -155,6 +207,8 @@ export default function SarprasLksPage() {
               status,
               file: status === "TIDAK ADA" ? null : item.file,
               fileName: status === "TIDAK ADA" ? "" : item.fileName,
+              storagePath: status === "TIDAK ADA" ? undefined : item.storagePath,
+              storedFileName: status === "TIDAK ADA" ? undefined : item.storedFileName,
             }
           : item
       )
@@ -211,17 +265,61 @@ export default function SarprasLksPage() {
     };
   };
 
+  const persistSarpras = async () => {
+    if (isSaving.current) return false;
+    if (!lksId) {
+      alert("ID LKS belum tersedia. Simpan Identitas LKS terlebih dahulu.");
+      return false;
+    }
+
+    const pendingStorage = items.find((item) => item.status === "ADA" && !item.storagePath);
+    if (pendingStorage) {
+      alert(`Data ${pendingStorage.judul} belum dapat disimpan ke backend karena file belum tersimpan di Supabase Storage.`);
+      return false;
+    }
+
+    isSaving.current = true;
+    setSaving(true);
+
+    try {
+      const localData = await buildData();
+      writeSessionData("si-inuk-lks-sarpras", localData);
+
+      const rows = items.map((item, index) => ({
+        lks_id: lksId,
+        item: item.id,
+        nama: item.judul,
+        status: index < 3 ? null : item.status || null,
+        file_name: item.storagePath ? item.storedFileName || item.fileName || null : null,
+        storage_path: item.storagePath || null,
+      }));
+      const { error } = await createClient()
+        .from("lks_sarpras")
+        .upsert(rows, { onConflict: "lks_id,item" });
+
+      if (error) {
+        alert(`Gagal menyimpan Sarpras ke Supabase: ${error.message}`);
+        return false;
+      }
+
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Terjadi kesalahan yang tidak diketahui.";
+      alert(`Gagal menyimpan Sarpras: ${message}`);
+      return false;
+    } finally {
+      isSaving.current = false;
+      setSaving(false);
+    }
+  };
+
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
-    const data = await buildData();
+    const saved = await persistSarpras();
+    if (!saved) return;
 
-    localStorage.setItem(
-      "si-inuk-lks-sarpras",
-      JSON.stringify(data)
-    );
-
-    alert("Data Sarpras berhasil disimpan sementara.");
+    alert("Data Sarpras tersimpan di Supabase. File dokumentasi tetap tersimpan di browser.");
   };
 
   const handleNext = async () => {
@@ -262,14 +360,10 @@ export default function SarprasLksPage() {
       }
     }
 
-    const data = await buildData();
+    const saved = await persistSarpras();
+    if (!saved) return;
 
-    localStorage.setItem(
-      "si-inuk-lks-sarpras",
-      JSON.stringify(data)
-    );
-
-    router.push("/lks/daftar/tanda-daftar");
+    router.push("/lks/daftar/layanan");
   };
 
   return (
@@ -285,7 +379,7 @@ export default function SarprasLksPage() {
           </p>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-6">
+        <form key={backendLoaded ? "backend-loaded" : "local-cache"} onSubmit={handleSubmit} className="space-y-6">
           <section className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
             <h2 className="text-xl font-semibold text-slate-900">
               Dokumentasi Wajib
@@ -425,6 +519,7 @@ export default function SarprasLksPage() {
           <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
             <button
               type="submit"
+              disabled={saving}
               className="rounded-lg border border-slate-300 bg-white px-5 py-2.5 font-medium text-slate-700 hover:bg-slate-50"
             >
               Simpan Data
@@ -441,9 +536,10 @@ export default function SarprasLksPage() {
             <button
               type="button"
               onClick={handleNext}
+              disabled={saving}
               className="rounded-lg bg-blue-600 px-5 py-2.5 font-medium text-white hover:bg-blue-700"
             >
-              Lanjut ke Tanda Daftar Dinas
+              Lanjut ke Layanan
             </button>
           </div>
         </form>

@@ -1,12 +1,20 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useSyncExternalStore, type FormEvent } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import { createClient } from "@/lib/supabase/client";
 import { saveFileAttachment } from "../_lib/attachments";
-import { getSessionSnapshot } from "../_lib/persistence";
+import { getSessionSnapshot, writeSessionData } from "../_lib/persistence";
+import { getCurrentLksId } from "../_lib/registration";
 
 export default function TandaDaftarLksPage() {
   const router = useRouter();
+  const lksId = getCurrentLksId();
+  const isSaving = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const [backendLoaded, setBackendLoaded] = useState(false);
+  const [backendSummaries, setBackendSummaries] = useState<Record<string, Record<string, unknown>>>({});
+  const [backendTdd, setBackendTdd] = useState<Record<string, unknown>>({});
 
   const getStatusPengajuan = (): "DRAFT" | "DIAJUKAN" => {
     if (typeof window === "undefined") {
@@ -49,12 +57,160 @@ export default function TandaDaftarLksPage() {
     }
   };
 
-  const identitas = bacaData("si-inuk-lks-identitas");
-  const legalitas = bacaData("si-inuk-lks-legalitas");
-  const sdm = bacaData("si-inuk-lks-sdm");
-  const layanan = bacaData("si-inuk-lks-layanan");
-  const pm = bacaData("si-inuk-lks-pm");
-  const sarpras = bacaData("si-inuk-lks-sarpras");
+  const identitas = { ...(bacaData("si-inuk-lks-identitas") ?? {}), ...(backendSummaries.identitas ?? {}) };
+  const legalitas = { ...(bacaData("si-inuk-lks-legalitas") ?? {}), ...(backendSummaries.legalitas ?? {}) };
+  const sdm = { ...(bacaData("si-inuk-lks-sdm") ?? {}), ...(backendSummaries.sdm ?? {}) };
+  const layanan = { ...(bacaData("si-inuk-lks-layanan") ?? {}), ...(backendSummaries.layanan ?? {}) };
+  const pm = { ...(bacaData("si-inuk-lks-pm") ?? {}), ...(backendSummaries.pm ?? {}) };
+  const sarpras = { ...(bacaData("si-inuk-lks-sarpras") ?? {}), ...(backendSummaries.sarpras ?? {}) };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadRegistrationSummary() {
+      if (!lksId) {
+        setBackendLoaded(true);
+        return;
+      }
+
+      const client = createClient();
+      const [identityResult, legalitasResult, snapshotResult, sdmResult, layananParentResult, pmParentResult, sarprasResult, tddResult] = await Promise.all([
+        client.from("lks").select("id,nama_lks,status_lks,status_akreditasi,kecamatan,desa,alamat,latitude,longitude,email,telepon").eq("id", lksId).maybeSingle(),
+        client.from("lks_legalitas").select("nomor_akta_pendirian,tanggal_akta_pendirian,akta_notaris_file_name,akta_notaris_storage_path,status_badan_hukum,nomor_pengesahan_kemenkumham,sk_pengesahan_kemenkumham_file_name,sk_pengesahan_kemenkumham_storage_path,ad_art_file_name,ad_art_storage_path,npwp_lks").eq("lks_id", lksId).maybeSingle(),
+        client.from("lks_registration_snapshot").select("payload").eq("lks_id", lksId).eq("section_name", "legalitas").maybeSingle(),
+        client.from("lks_sdm").select("nama_pimpinan,email,data_sdm_file_name,data_sdm_storage_path,sertifikasi_file_name,sertifikasi_storage_path").eq("lks_id", lksId).maybeSingle(),
+        client.from("lks_layanan").select("id").eq("lks_id", lksId).maybeSingle(),
+        client.from("lks_pm").select("id").eq("lks_id", lksId).maybeSingle(),
+        client.from("lks_sarpras").select("item,nama,status,file_name,storage_path").eq("lks_id", lksId),
+        client.from("lks_tanda_daftar").select("*").eq("lks_id", lksId).maybeSingle(),
+      ]);
+
+      if (cancelled) return;
+      const initialError = identityResult.error || legalitasResult.error || snapshotResult.error || sdmResult.error || layananParentResult.error || pmParentResult.error || sarprasResult.error || tddResult.error;
+      if (initialError) {
+        alert(`Gagal memuat ringkasan pendaftaran dari Supabase: ${initialError.message}`);
+        setBackendLoaded(true);
+        return;
+      }
+
+      const childResults = await Promise.all([
+        layananParentResult.data
+          ? Promise.all([
+              client.from("lks_layanan_jenis").select("jenis_pelayanan").eq("layanan_id", layananParentResult.data.id),
+              client.from("lks_layanan_sasaran").select("sasaran_pelayanan").eq("layanan_id", layananParentResult.data.id),
+              client.from("lks_layanan_permasalahan").select("permasalahan_sosial").eq("layanan_id", layananParentResult.data.id),
+              client.from("lks_layanan_sistem").select("sistem_pelayanan").eq("layanan_id", layananParentResult.data.id),
+              client.from("lks_layanan_wilayah").select("kecamatan,desa").eq("layanan_id", layananParentResult.data.id),
+            ])
+          : Promise.resolve(null),
+        pmParentResult.data
+          ? Promise.all([
+              client.from("lks_pm_penerima_manfaat").select("tahun_data,pm_perempuan,pm_laki_laki,bnba_file_name,bnba_storage_path").eq("pm_id", pmParentResult.data.id),
+              client.from("lks_pm_pembinaan").select("tahun,status,jenis_kegiatan_pembinaan").eq("pm_id", pmParentResult.data.id),
+              client.from("lks_pm_bantuan").select("tahun,status,pemberi_bantuan,jenis_bantuan").eq("pm_id", pmParentResult.data.id),
+            ])
+          : Promise.resolve(null),
+      ]);
+
+      if (cancelled) return;
+      const layananResults = childResults[0];
+      const pmResults = childResults[1];
+      const childError = layananResults?.find((result) => result.error)?.error || pmResults?.find((result) => result.error)?.error;
+      if (childError) {
+        alert(`Gagal memuat rincian pendaftaran dari Supabase: ${childError.message}`);
+        setBackendLoaded(true);
+        return;
+      }
+
+      const readCurrentData = (key: string): Record<string, unknown> | null => {
+        const raw = getSessionSnapshot(key);
+        if (!raw) return null;
+        try {
+          return JSON.parse(raw) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      };
+      const localPm = readCurrentData("si-inuk-lks-pm");
+      const localSarpras = readCurrentData("si-inuk-lks-sarpras");
+      const localDocs = Array.isArray(localSarpras?.dokumentasi_wajib) ? localSarpras.dokumentasi_wajib as Array<Record<string, unknown>> : [];
+      const localFacilities = Array.isArray(localSarpras?.sarpras) ? localSarpras.sarpras as Array<Record<string, unknown>> : [];
+      const storageRows = sarprasResult.data ?? [];
+      const mapSarpras = (row: (typeof storageRows)[number]) => {
+        const cached = [...localDocs, ...localFacilities].find((item) => item.item === row.item);
+        return { item: row.item, nama: row.nama, status: row.status || (typeof cached?.status === "string" ? cached.status : ""), file: row.storage_path ? row.file_name || "" : typeof cached?.file === "string" ? cached.file : "" };
+      };
+      const pmLocalRecords = Array.isArray(localPm?.penerima_manfaat) ? localPm.penerima_manfaat as Array<Record<string, unknown>> : [];
+      const remotePmRecords = pmResults?.[0].data ?? [];
+      const remotePembinaan = pmResults?.[1].data ?? [];
+      const remoteBantuan = pmResults?.[2].data ?? [];
+      const legalRow = legalitasResult.data;
+      const legalSnapshot = snapshotResult.data?.payload as Record<string, unknown> | null;
+      const layananData = layananResults
+        ? {
+            jenis_pelayanan: layananResults[0].data?.map((row) => row.jenis_pelayanan) ?? [],
+            sasaran_pelayanan: layananResults[1].data?.map((row) => row.sasaran_pelayanan) ?? [],
+            permasalahan_sosial: layananResults[2].data?.map((row) => row.permasalahan_sosial) ?? [],
+            sistem_pelayanan: layananResults[3].data?.map((row) => row.sistem_pelayanan) ?? [],
+            cakupan_wilayah: JSON.stringify(layananResults[4].data?.map((row) => ({ kecamatan: row.kecamatan, desa: row.desa })) ?? []),
+          }
+        : null;
+
+      setBackendSummaries({
+        ...(identityResult.data ? { identitas: identityResult.data as unknown as Record<string, unknown> } : {}),
+        ...(legalRow ? { legalitas: {
+          nomor_akta_pendirian: legalRow.nomor_akta_pendirian,
+          tanggal_akta_pendirian: legalRow.tanggal_akta_pendirian,
+          status_badan_hukum: legalSnapshot?.status_badan_hukum ?? legalRow.status_badan_hukum,
+          nomor_pengesahan_kemenkumham: legalRow.nomor_pengesahan_kemenkumham,
+          npwp_lks: legalRow.npwp_lks,
+          ...(legalRow.akta_notaris_storage_path ? { akta_notaris: legalRow.akta_notaris_file_name } : {}),
+          ...(legalRow.sk_pengesahan_kemenkumham_storage_path ? { sk_pengesahan_kemenkumham: legalRow.sk_pengesahan_kemenkumham_file_name } : {}),
+          ...(legalRow.ad_art_storage_path ? { ad_art: legalRow.ad_art_file_name } : {}),
+        } } : {}),
+        ...(sdmResult.data ? { sdm: {
+          nama_pimpinan: sdmResult.data.nama_pimpinan,
+          email: sdmResult.data.email,
+          ...(sdmResult.data.data_sdm_storage_path ? { data_sdm: sdmResult.data.data_sdm_file_name } : {}),
+          ...(sdmResult.data.sertifikasi_storage_path ? { sdm_sertifikasi: sdmResult.data.sertifikasi_file_name } : {}),
+        } } : {}),
+        ...(layananData ? { layanan: layananData } : {}),
+        ...(pmParentResult.data ? { pm: {
+          pm_id: pmParentResult.data.id,
+          penerima_manfaat: remotePmRecords.map((row) => {
+            const local = pmLocalRecords.find((item) => String(item.tahun_data ?? "") === row.tahun_data);
+            return {
+              tahun_data: row.tahun_data,
+              pm_perempuan: row.pm_perempuan,
+              pm_laki_laki: row.pm_laki_laki,
+              jumlah_penerima_manfaat: Number(row.pm_perempuan ?? 0) + Number(row.pm_laki_laki ?? 0),
+              upload_bnba_pm: row.bnba_storage_path ? row.bnba_file_name || "" : typeof local?.upload_bnba_pm === "string" ? local.upload_bnba_pm : "",
+            };
+          }),
+          pembinaan: remotePembinaan,
+          bantuan: remoteBantuan,
+        } } : {}),
+        ...(storageRows.length ? { sarpras: {
+          dokumentasi_wajib: storageRows.filter((row) => ["tampak_depan", "papan_nama", "foto_pm"].includes(row.item)).map(mapSarpras),
+          sarpras: storageRows.filter((row) => !["tampak_depan", "papan_nama", "foto_pm"].includes(row.item)).map(mapSarpras),
+        } } : {}),
+      });
+
+      if (tddResult.data) {
+        setBackendTdd(tddResult.data as Record<string, unknown>);
+        if (tddResult.data.status_pengajuan === "DRAFT" || tddResult.data.status_pengajuan === "DIAJUKAN") {
+          setStatusPengajuan(tddResult.data.status_pengajuan);
+        }
+      }
+
+      setBackendLoaded(true);
+    }
+
+    void loadRegistrationSummary();
+    return () => {
+      cancelled = true;
+    };
+  }, [lksId]);
 
   const bacaCakupanWilayah = (): { kecamatan: string; desa: string }[] => {
     if (typeof layanan?.cakupan_wilayah !== "string" || !layanan.cakupan_wilayah) {
@@ -128,11 +284,25 @@ export default function TandaDaftarLksPage() {
     ) as HTMLFormElement | null;
 
     if (!form) return;
+    if (isSaving.current) return;
+    if (!lksId) {
+      alert("ID LKS belum tersedia. Simpan Identitas LKS terlebih dahulu.");
+      return;
+    }
 
     if (status === "DIAJUKAN" && !validasiAjukan(form)) {
       return;
     }
 
+    if (status === "DIAJUKAN") {
+      alert("Pengajuan belum dikirim karena dokumen belum tersimpan di Supabase Storage. Draft tetap dapat disimpan.");
+      return;
+    }
+
+    isSaving.current = true;
+    setSaving(true);
+
+    try {
     const formData = new FormData(form);
     const data: Record<string, string> = {};
 
@@ -149,19 +319,47 @@ export default function TandaDaftarLksPage() {
 
     data.status_pengajuan = status;
 
-    localStorage.setItem(
-      "si-inuk-lks-tanda-daftar",
-      JSON.stringify(data)
+    const storageFields = [
+      "surat_permohonan",
+      "kerjasama_dinas",
+      "surat_keterangan_domisili",
+    ] as const;
+    const documentPayload: Record<string, string | null> = {};
+    for (const field of storageFields) {
+      const fileNameColumn = `${field}_file_name`;
+      const storagePathColumn = `${field}_storage_path`;
+      const existingPath = backendTdd[storagePathColumn];
+      documentPayload[fileNameColumn] = typeof existingPath === "string" ? String(backendTdd[fileNameColumn] ?? "") : null;
+      documentPayload[storagePathColumn] = typeof existingPath === "string" ? existingPath : null;
+    }
+
+    const { error } = await createClient().from("lks_tanda_daftar").upsert(
+      {
+        lks_id: lksId,
+        status_pengajuan: status,
+        ...documentPayload,
+      },
+      { onConflict: "lks_id" },
     );
 
-    setStatusPengajuan(status);
-
-    if (status === "DRAFT") {
-      alert("Draft Tanda Daftar Dinas berhasil disimpan sementara.");
+    if (error) {
+      alert(`Gagal menyimpan Draft TDD ke Supabase: ${error.message}`);
       return;
     }
 
-    alert("Pengajuan Tanda Daftar Dinas berhasil diajukan.");
+    writeSessionData("si-inuk-lks-tanda-daftar", data);
+    setBackendTdd((current) => ({ ...current, status_pengajuan: status }));
+
+    setStatusPengajuan(status);
+
+    alert("Draft TDD tersimpan di Supabase. File baru masih tersimpan di browser.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Terjadi kesalahan yang tidak diketahui.";
+      alert(`Gagal menyimpan Draft TDD: ${message}`);
+    } finally {
+      isSaving.current = false;
+      setSaving(false);
+    }
   };
 
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
@@ -188,7 +386,7 @@ export default function TandaDaftarLksPage() {
           </p>
         </div>
 
-        <form id="tdd-form" onSubmit={handleSubmit} className="space-y-6">
+        <form key={backendLoaded ? "backend-loaded" : "local-cache"} id="tdd-form" onSubmit={handleSubmit} className="space-y-6">
           <details className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
             <summary className="cursor-pointer list-none text-xl font-semibold text-slate-900">
               Status Pengajuan
@@ -812,10 +1010,10 @@ export default function TandaDaftarLksPage() {
           <div className="flex flex-col gap-3 sm:flex-row sm:justify-end">
             <button
               type="button"
-              onClick={() => router.push("/lks/daftar/sarpras")}
+              onClick={() => router.push("/lks/daftar/layanan")}
               className="rounded-lg border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
             >
-              Kembali ke Sarpras
+              Kembali ke Layanan
             </button>
 
             <button
@@ -829,6 +1027,7 @@ export default function TandaDaftarLksPage() {
             <button
               type="button"
               onClick={handleSimpanDraft}
+              disabled={saving}
               className="rounded-lg border border-slate-300 bg-white px-5 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50"
             >
               Simpan Draft
@@ -836,6 +1035,7 @@ export default function TandaDaftarLksPage() {
 
             <button
               type="submit"
+              disabled={saving}
               className="rounded-lg bg-blue-700 px-5 py-3 text-sm font-semibold text-white hover:bg-blue-800"
             >
               Ajukan Tanda Daftar Dinas

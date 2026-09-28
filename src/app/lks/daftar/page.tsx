@@ -2,9 +2,10 @@
 
 import dynamic from "next/dynamic";
 import { useRouter } from "next/navigation";
-import { useState, useSyncExternalStore, type FormEvent } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
 import { LKS_STATUS_OPTIONS } from "../_lib/lks";
-import { getSessionSnapshot, readSessionData } from "./_lib/persistence";
+import { getSessionSnapshot, readSessionData, writeSessionData } from "./_lib/persistence";
+import { createClient } from "@/lib/supabase/client";
 
 const LocationPicker = dynamic(() => import("../../_components/location-picker"), {
   ssr: false,
@@ -276,6 +277,7 @@ const wilayah: Record<string, string[]> = {
 
 export default function DaftarLksPage() {
   const router = useRouter();
+  const isSubmitting = useRef(false);
 
   const savedSnapshot = useSyncExternalStore(
     () => () => {},
@@ -289,24 +291,82 @@ export default function DaftarLksPage() {
         {}
       )
     : {};
+  const [backendData, setBackendData] = useState<Record<string, string>>({});
+  const [backendLoaded, setBackendLoaded] = useState(false);
+  const effectiveSavedData = { ...savedData, ...backendData };
+  const savedLksId = savedData.lks_id;
 
-  const [kecamatan, setKecamatan] = useState<string>(() => savedData.kecamatan ?? "");
-  const [desa, setDesa] = useState<string>(() => savedData.desa ?? "");
+  const [kecamatan, setKecamatan] = useState<string>(() => effectiveSavedData.kecamatan ?? "");
+  const [desa, setDesa] = useState<string>(() => effectiveSavedData.desa ?? "");
   const [coordinates, setCoordinates] = useState({
-    latitude: savedData.latitude ?? "",
-    longitude: savedData.longitude ?? "",
+    latitude: effectiveSavedData.latitude ?? "",
+    longitude: effectiveSavedData.longitude ?? "",
   });
   const [errors, setErrors] = useState<FormErrors>({});
 
-  const effectiveKecamatan = kecamatan || savedData.kecamatan || "";
-  const effectiveDesa = desa || savedData.desa || "";
+  useEffect(() => {
+    let cancelled = false;
+    const lksId = savedLksId;
+
+    async function loadIdentity() {
+      if (!lksId) {
+        setBackendLoaded(true);
+        return;
+      }
+
+      const { data, error } = await createClient()
+        .from("lks")
+        .select("id,nama_lks,status_lks,status_akreditasi,kecamatan,desa,alamat,latitude,longitude,email,telepon")
+        .eq("id", lksId)
+        .maybeSingle();
+
+      if (cancelled) return;
+      if (error) {
+        alert(`Gagal memuat Identitas LKS dari Supabase: ${error.message}`);
+      } else if (data) {
+        const remoteData: Record<string, string> = {
+          lks_id: data.id,
+          nama_lks: data.nama_lks,
+          status_lks: data.status_lks,
+          status_akreditasi: data.status_akreditasi || "",
+          kecamatan: data.kecamatan || "",
+          desa: data.desa || "",
+          alamat: data.alamat || "",
+          latitude: data.latitude === null ? "" : String(data.latitude),
+          longitude: data.longitude === null ? "" : String(data.longitude),
+          email: data.email || "",
+          telepon: data.telepon || "",
+        };
+        setBackendData(remoteData);
+        setKecamatan(remoteData.kecamatan);
+        setDesa(remoteData.desa);
+        setCoordinates({ latitude: remoteData.latitude, longitude: remoteData.longitude });
+        const cachedIdentity = readSessionData<Record<string, string>>("si-inuk-lks-identitas", {});
+        writeSessionData("si-inuk-lks-identitas", { ...cachedIdentity, ...remoteData });
+      }
+
+      setBackendLoaded(true);
+    }
+
+    void loadIdentity();
+    return () => {
+      cancelled = true;
+    };
+  }, [savedLksId]);
+
+  const effectiveKecamatan = kecamatan || effectiveSavedData.kecamatan || "";
+  const effectiveDesa = desa || effectiveSavedData.desa || "";
   const locationQuery = [effectiveKecamatan, effectiveDesa].filter(Boolean).join(", ");
 
-  const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
+    if (isSubmitting.current) {
+      return;
+    }
+
     const formData = Object.fromEntries(new FormData(e.currentTarget).entries()) as Record<string, string>;
-    const normalizedData = {
+    const normalizedData: Record<string, string> = {
       ...formData,
       kecamatan: effectiveKecamatan,
       desa: effectiveDesa,
@@ -322,9 +382,49 @@ export default function DaftarLksPage() {
       return;
     }
 
-    localStorage.setItem("si-inuk-lks-identitas", JSON.stringify(normalizedData));
-    alert("Data Identitas LKS berhasil disimpan sementara.");
-    router.push("/lks/daftar/legalitas");
+    isSubmitting.current = true;
+    const lksId = effectiveSavedData.lks_id || crypto.randomUUID();
+    const dataWithId = { ...normalizedData, lks_id: lksId };
+
+    try {
+      writeSessionData("si-inuk-lks-identitas", dataWithId);
+
+      const { data, error } = await createClient()
+        .from("lks")
+        .upsert(
+          {
+            id: lksId,
+            slug: `${normalizedData.nama_lks}-${lksId}`,
+            nama_lks: normalizedData.nama_lks,
+            status_lks: normalizedData.status_lks,
+            status_akreditasi: normalizedData.status_akreditasi || null,
+            kecamatan: normalizedData.kecamatan,
+            desa: normalizedData.desa,
+            alamat: normalizedData.alamat,
+            latitude: normalizedData.latitude ? Number(normalizedData.latitude) : null,
+            longitude: normalizedData.longitude ? Number(normalizedData.longitude) : null,
+            email: normalizedData.email || null,
+            telepon: normalizedData.telepon || null,
+          },
+          { onConflict: "id" },
+        )
+        .select("id")
+        .single();
+
+      if (error) {
+        alert(`Gagal menyimpan Identitas LKS ke Supabase: ${error.message}`);
+        return;
+      }
+
+      writeSessionData("si-inuk-lks-identitas", { ...dataWithId, lks_id: data.id });
+      alert("Data Identitas LKS berhasil disimpan.");
+      router.push("/lks/daftar/legalitas");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Terjadi kesalahan yang tidak diketahui.";
+      alert(`Gagal menyimpan Identitas LKS: ${message}`);
+    } finally {
+      isSubmitting.current = false;
+    }
   };
 
   const renderError = (field: FieldName) =>
@@ -364,7 +464,7 @@ export default function DaftarLksPage() {
           </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+        <form key={backendLoaded ? "backend-loaded" : "local-cache"} onSubmit={handleSubmit} className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
           <div className="mb-6 border-b border-slate-200 pb-4">
             <h2 className="text-xl font-semibold text-slate-900">
               Data Identitas LKS
@@ -381,7 +481,7 @@ export default function DaftarLksPage() {
               </label>
               <input
                 name="nama_lks"
-                defaultValue={savedData.nama_lks || ""}
+                defaultValue={effectiveSavedData.nama_lks || ""}
                 aria-invalid={Boolean(errors.nama_lks)}
                 type="text"
                 placeholder="Masukkan nama Lembaga Kesejahteraan Sosial"
@@ -454,7 +554,7 @@ export default function DaftarLksPage() {
               </label>
               <input
                 name="telepon"
-                defaultValue={savedData.telepon || ""}
+                defaultValue={effectiveSavedData.telepon || ""}
                 aria-invalid={Boolean(errors.telepon)}
                 type="tel"
                 placeholder="Nomor telepon LKS"
@@ -469,7 +569,7 @@ export default function DaftarLksPage() {
               </label>
               <input
                 name="email"
-                defaultValue={savedData.email || ""}
+                defaultValue={effectiveSavedData.email || ""}
                 aria-invalid={Boolean(errors.email)}
                 type="email"
                 placeholder="Email LKS"
@@ -484,7 +584,7 @@ export default function DaftarLksPage() {
               </label>
               <select
                 name="status_lks"
-                defaultValue={savedData.status_lks || ""}
+                defaultValue={effectiveSavedData.status_lks || ""}
                 aria-invalid={Boolean(errors.status_lks)}
                 className={`w-full rounded-lg border bg-white px-4 py-3 text-sm outline-none focus:ring-2 ${errors.status_lks ? "border-red-300 bg-red-50 focus:border-red-500 focus:ring-red-100" : "border-slate-300 focus:border-blue-600 focus:ring-blue-100"}`}>
                 <option value="">Pilih Status</option>
@@ -503,7 +603,7 @@ export default function DaftarLksPage() {
               </label>
               <select
                 name="status_akreditasi"
-                defaultValue={savedData.status_akreditasi || ""}
+                defaultValue={effectiveSavedData.status_akreditasi || ""}
                 aria-invalid={Boolean(errors.status_akreditasi)}
                 className={`w-full rounded-lg border bg-white px-4 py-3 text-sm outline-none focus:ring-2 ${errors.status_akreditasi ? "border-red-300 bg-red-50 focus:border-red-500 focus:ring-red-100" : "border-slate-300 focus:border-blue-600 focus:ring-blue-100"}`}>
                 <option value="">Pilih Status Akreditasi</option>

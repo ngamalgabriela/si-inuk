@@ -1,7 +1,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useSyncExternalStore, type FormEvent } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import { createClient } from "@/lib/supabase/client";
 import { saveFileAttachment } from "../_lib/attachments";
 import {
   getSessionSnapshot,
@@ -9,9 +10,15 @@ import {
   subscribeSessionStorage,
   writeSessionData,
 } from "../_lib/persistence";
+import { getCurrentLksId } from "../_lib/registration";
 
 export default function SdmLksPage() {
   const router = useRouter();
+  const lksId = getCurrentLksId();
+  const isSaving = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const [backendData, setBackendData] = useState<Record<string, string>>({});
+  const [backendLoaded, setBackendLoaded] = useState(false);
   const [fileName, setFileName] = useState("");
 
   const savedSnapshot = useSyncExternalStore(
@@ -20,11 +27,59 @@ export default function SdmLksPage() {
     () => ""
   );
 
-  const savedData = savedSnapshot
+  const localSavedData = savedSnapshot
     ? readSessionData<Record<string, string>>("si-inuk-lks-sdm", {})
     : {};
+  const savedData = { ...localSavedData, ...backendData };
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadSdm() {
+      if (!lksId) {
+        setBackendLoaded(true);
+        return;
+      }
+
+      const { data, error } = await createClient()
+        .from("lks_sdm")
+        .select("nama_pimpinan,email,data_sdm_file_name,data_sdm_storage_path,sertifikasi_file_name,sertifikasi_storage_path")
+        .eq("lks_id", lksId)
+        .maybeSingle();
+
+      if (cancelled) return;
+
+      if (error) {
+        alert(`Gagal memuat data SDM dari Supabase: ${error.message}`);
+      } else if (data) {
+        setBackendData({
+          ...(typeof data.nama_pimpinan === "string" ? { nama_pimpinan: data.nama_pimpinan } : {}),
+          ...(typeof data.email === "string" ? { email: data.email } : {}),
+          ...(data.data_sdm_storage_path ? { data_sdm: data.data_sdm_file_name || "", _data_sdm_file_name: data.data_sdm_file_name || "", _data_sdm_storage_path: data.data_sdm_storage_path } : {}),
+          ...(data.sertifikasi_storage_path ? { sdm_sertifikasi: data.sertifikasi_file_name || "", _sertifikasi_file_name: data.sertifikasi_file_name || "", _sertifikasi_storage_path: data.sertifikasi_storage_path } : {}),
+        });
+      }
+
+      setBackendLoaded(true);
+    }
+
+    void loadSdm();
+    return () => {
+      cancelled = true;
+    };
+  }, [lksId]);
 
   const saveData = async (form: HTMLFormElement) => {
+    if (isSaving.current) return false;
+    if (!lksId) {
+      alert("ID LKS belum tersedia. Simpan Identitas LKS terlebih dahulu.");
+      return false;
+    }
+
+    isSaving.current = true;
+    setSaving(true);
+
+    try {
     const formData = new FormData(form);
     const data: Record<string, string> = { ...savedData };
 
@@ -39,15 +94,44 @@ export default function SdmLksPage() {
       }
     }
 
+    const { error } = await createClient().from("lks_sdm").upsert(
+      {
+        lks_id: lksId,
+        nama_pimpinan: data.nama_pimpinan || null,
+        email: data.email || null,
+        data_sdm_file_name: data._data_sdm_storage_path ? data._data_sdm_file_name : null,
+        data_sdm_storage_path: data._data_sdm_storage_path || null,
+        sertifikasi_file_name: data._sertifikasi_storage_path ? data._sertifikasi_file_name : null,
+        sertifikasi_storage_path: data._sertifikasi_storage_path || null,
+      },
+      { onConflict: "lks_id" },
+    );
+
+    if (error) {
+      alert(`Gagal menyimpan SDM ke Supabase: ${error.message}`);
+      return false;
+    }
+
     writeSessionData("si-inuk-lks-sdm", data);
+    setBackendData(data);
+    return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Terjadi kesalahan yang tidak diketahui.";
+      alert(`Gagal menyimpan SDM: ${message}`);
+      return false;
+    } finally {
+      isSaving.current = false;
+      setSaving(false);
+    }
   };
 
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
-    await saveData(e.currentTarget);
+    const saved = await saveData(e.currentTarget);
+    if (!saved) return;
 
-    alert("Data SDM LKS berhasil disimpan sementara.");
+    alert("Data SDM tersimpan di Supabase. File lampiran masih tersimpan di browser.");
   };
 
   const handleNext = async () => {
@@ -61,9 +145,10 @@ export default function SdmLksPage() {
       return;
     }
 
-    await saveData(form);
+    const saved = await saveData(form);
+    if (!saved) return;
 
-    router.push("/lks/daftar/layanan");
+    router.push("/lks/daftar/pm");
   };
 
   return (
@@ -81,6 +166,7 @@ export default function SdmLksPage() {
         </div>
 
         <form
+          key={backendLoaded ? "backend-loaded" : "local-cache"}
           id="sdm-form"
           onSubmit={handleSubmit}
           className="space-y-6"
@@ -217,6 +303,7 @@ export default function SdmLksPage() {
           <div className="flex flex-wrap gap-3">
             <button
               type="submit"
+              disabled={saving}
               className="rounded-lg bg-slate-900 px-5 py-2.5 font-medium text-white hover:bg-slate-800"
             >
               Simpan Data
@@ -233,9 +320,10 @@ export default function SdmLksPage() {
             <button
               type="button"
               onClick={handleNext}
+              disabled={saving}
               className="rounded-lg bg-green-700 px-5 py-2.5 font-medium text-white hover:bg-green-800"
             >
-              Lanjut ke Layanan
+              Lanjut ke PM
             </button>
           </div>
         </form>

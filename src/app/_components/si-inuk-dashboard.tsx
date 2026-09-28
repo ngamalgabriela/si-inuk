@@ -7,7 +7,6 @@ import { useEffect, useMemo, useState } from "react";
 import { createClient } from "@/lib/supabase/client";
 import { getIdentityData } from "../lk3/_lib/persistence";
 import { LKS_STATUS_OPTIONS } from "../lks/_lib/lks";
-import { getSessionSnapshot } from "../lks/daftar/_lib/persistence";
 
 const PsksMap = dynamic(() => import("./psks-map"), {
   ssr: false,
@@ -292,87 +291,91 @@ export default function SiInukDashboard() {
   }, []);
 
   useEffect(() => {
-    async function loadLocalDashboardData() {
-      await Promise.resolve();
+    let cancelled = false;
 
-    const readSession = (key: string): Record<string, unknown> => {
-      const raw = getSessionSnapshot(key);
-      if (!raw) return {};
+    async function loadDashboardData() {
+      setLoading(true);
+      setError(null);
 
-      try {
-        return JSON.parse(raw) as Record<string, unknown>;
-      } catch {
-        return {};
+      const client = createClient();
+      const [lksResult, tddResult, pmParentResult, legalitasResult, sdmResult, layananResult, sarprasResult] = await Promise.all([
+        client.from("lks").select("id,nama_lks,kecamatan,desa,status_lks,status_akreditasi,latitude,longitude"),
+        client.from("lks_tanda_daftar").select("lks_id,status_pengajuan"),
+        client.from("lks_pm").select("id,lks_id"),
+        client.from("lks_legalitas").select("lks_id"),
+        client.from("lks_sdm").select("lks_id"),
+        client.from("lks_layanan").select("lks_id"),
+        client.from("lks_sarpras").select("lks_id"),
+      ]);
+
+      if (cancelled) return;
+
+      const queryError = lksResult.error || tddResult.error || pmParentResult.error || legalitasResult.error || sdmResult.error || layananResult.error || sarprasResult.error;
+      if (queryError) {
+        setError(`Gagal memuat data Supabase: ${queryError.message}`);
+        setLksRows([]);
+        setTddRows([]);
+        setPmRows([]);
+        setLoading(false);
+        return;
       }
-    };
 
-    const identity = readSession("si-inuk-lks-identitas");
-    const tdd = readSession("si-inuk-lks-tanda-daftar");
-    const pm = readSession("si-inuk-lks-pm");
-    const lksId = "local-lks";
-    const namaLks = normalizeText(typeof identity.nama_lks === "string" ? identity.nama_lks : "");
-    const statusLks = normalizeText(typeof identity.status_lks === "string" ? identity.status_lks : "Aktif") || "Aktif";
-    const tddStatus = normalizeText(typeof tdd.status_pengajuan === "string" ? tdd.status_pengajuan : "");
-    const latitude = Number(identity.latitude);
-    const longitude = Number(identity.longitude);
-    const localRows: LksRow[] = namaLks
-      ? [{
-          id: lksId,
-          nama_lks: namaLks,
-          kecamatan: typeof identity.kecamatan === "string" ? identity.kecamatan : null,
-          desa: typeof identity.desa === "string" ? identity.desa : null,
-          status_lks: statusLks,
-          status_akreditasi: null,
-          latitude: Number.isFinite(latitude) ? latitude : null,
-          longitude: Number.isFinite(longitude) ? longitude : null,
-        }]
-      : [];
-    const localTddRows: TddRow[] = tddStatus
-      ? [{ lks_id: lksId, status_pengajuan: tddStatus }]
-      : [];
-    const pmRecords = Array.isArray(pm.penerima_manfaat) ? pm.penerima_manfaat : [];
-    const localPmRows: PmRow[] = pmRecords.map((record, index) => {
-      const item = record as Record<string, unknown>;
-      return {
-        id: `${lksId}-pm-${index}`,
-        pm_id: `${lksId}-pm`,
-        tahun_data: String(item.tahun_data ?? ""),
-        pm_perempuan: Number(item.pm_perempuan ?? 0),
-        pm_laki_laki: Number(item.pm_laki_laki ?? 0),
-        lks_id: lksId,
-      };
-    });
-    const localYears = Array.from(new Set(localPmRows.map((row) => row.tahun_data).filter(Boolean))).sort();
+      const pmParents = pmParentResult.data ?? [];
+      const pmResult = pmParents.length
+        ? await client
+            .from("lks_pm_penerima_manfaat")
+            .select("id,pm_id,tahun_data,pm_perempuan,pm_laki_laki")
+            .in("pm_id", pmParents.map((row) => row.id))
+        : { data: [], error: null };
 
-    setCatalog({
-      kecamatan: localRows.map((row) => row.kecamatan).filter((value): value is string => Boolean(value)),
-      statusLks: Array.from(new Set([...LKS_STATUS_OPTIONS, statusLks])),
-      statusAkreditasi: [],
-      tahunPm: localYears,
-      tddStatus: localTddRows.map((row) => row.status_pengajuan).filter((value): value is string => Boolean(value)),
-    });
-    setLksRows(localRows.filter((row) =>
-      (filters.kecamatan === "Semua" || row.kecamatan === filters.kecamatan) &&
-      (filters.statusLks === "Semua" || row.status_lks === filters.statusLks) &&
-      (filters.statusAkreditasi === "Semua") &&
-      (filters.tddStatus === "Semua" || localTddRows.some((item) => item.lks_id === row.id && item.status_pengajuan === filters.tddStatus)),
-    ));
-    setTddRows(localTddRows);
-    setPmRows(localPmRows);
-    setAvailableYears(localYears);
-    setCoverage({
-      legalitas: localStorage.getItem("si-inuk-lks-legalitas") ? 1 : 0,
-      sdm: localStorage.getItem("si-inuk-lks-sdm") ? 1 : 0,
-      layanan: localStorage.getItem("si-inuk-lks-layanan") ? 1 : 0,
-      sarpras: localStorage.getItem("si-inuk-lks-sarpras") ? 1 : 0,
-    });
-    setLegalitasLksIds(localStorage.getItem("si-inuk-lks-legalitas") ? new Set([lksId]) : new Set());
-    setSelectedLksId(localRows[0]?.id ?? "");
-    setError(null);
-    setLoading(false);
+      if (cancelled) return;
+      if (pmResult.error) {
+        setError(`Gagal memuat data Penerima Manfaat dari Supabase: ${pmResult.error.message}`);
+        setLoading(false);
+        return;
+      }
+
+      const allLksRows = (lksResult.data ?? []) as LksRow[];
+      const allTddRows = (tddResult.data ?? []) as TddRow[];
+      const pmLksIds = new Map(pmParents.map((row) => [row.id, row.lks_id]));
+      const allPmRows: PmRow[] = (pmResult.data ?? []).map((row) => ({
+        ...row,
+        lks_id: pmLksIds.get(row.pm_id) ?? null,
+      })) as PmRow[];
+      const matchingLks = allLksRows.filter((row) =>
+        (filters.kecamatan === "Semua" || row.kecamatan === filters.kecamatan) &&
+        (filters.statusLks === "Semua" || row.status_lks === filters.statusLks) &&
+        (filters.statusAkreditasi === "Semua" || row.status_akreditasi === filters.statusAkreditasi) &&
+        (filters.tddStatus === "Semua" || allTddRows.some((item) => item.lks_id === row.id && item.status_pengajuan === filters.tddStatus)),
+      );
+      const years = Array.from(new Set(allPmRows.map((row) => row.tahun_data).filter(Boolean))).sort();
+
+      setCatalog({
+        kecamatan: Array.from(new Set(allLksRows.map((row) => row.kecamatan).filter((value): value is string => Boolean(value)))),
+        statusLks: Array.from(new Set([...LKS_STATUS_OPTIONS, ...allLksRows.map((row) => row.status_lks).filter((value): value is string => Boolean(value))])),
+        statusAkreditasi: Array.from(new Set(allLksRows.map((row) => row.status_akreditasi).filter((value): value is string => Boolean(value)))),
+        tahunPm: years,
+        tddStatus: Array.from(new Set(allTddRows.map((row) => row.status_pengajuan).filter((value): value is string => Boolean(value)))),
+      });
+      setLksRows(matchingLks);
+      setTddRows(allTddRows);
+      setPmRows(allPmRows);
+      setAvailableYears(years);
+      setCoverage({
+        legalitas: new Set((legalitasResult.data ?? []).map((row) => row.lks_id)).size,
+        sdm: new Set((sdmResult.data ?? []).map((row) => row.lks_id)).size,
+        layanan: new Set((layananResult.data ?? []).map((row) => row.lks_id)).size,
+        sarpras: new Set((sarprasResult.data ?? []).map((row) => row.lks_id)).size,
+      });
+      setLegalitasLksIds(new Set((legalitasResult.data ?? []).map((row) => row.lks_id)));
+      setSelectedLksId((current) => matchingLks.some((row) => row.id === current) ? current : matchingLks[0]?.id ?? "");
+      setLoading(false);
     }
 
-    void loadLocalDashboardData();
+    void loadDashboardData();
+    return () => {
+      cancelled = true;
+    };
   }, [filters.kecamatan, filters.statusLks, filters.statusAkreditasi, filters.tddStatus]);
 
   const kecamatanOptions = useMemo(() => ["Semua", ...catalog.kecamatan], [catalog.kecamatan]);

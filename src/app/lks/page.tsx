@@ -3,20 +3,22 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { createClient } from "@/lib/supabase/client";
 import { buildLksArchiveFromSession } from "./daftar/_lib/attachments";
 import {
   getLksSummary,
   getWorkflowStatusLabel,
   type LksRecord,
 } from "./_lib/lks";
-import { getSessionSnapshot } from "./daftar/_lib/persistence";
+import { getCurrentLksId } from "./daftar/_lib/registration";
 
 type LksData = LksRecord;
 
 export default function LksPage() {
   const router = useRouter();
 
-  const [lks, setLks] = useState<LksData | null>(null);
+  const [lksRows, setLksRows] = useState<LksData[]>([]);
+  const [localLksId, setLocalLksId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -27,29 +29,17 @@ export default function LksPage() {
       try {
         setLoading(true);
         setError(null);
+        setLocalLksId(getCurrentLksId());
 
-        const rawIdentity = getSessionSnapshot("si-inuk-lks-identitas");
-        const rawTdd = getSessionSnapshot("si-inuk-lks-tanda-daftar");
-        const identity = rawIdentity ? JSON.parse(rawIdentity) as Record<string, string> : null;
-        const tdd = rawTdd ? JSON.parse(rawTdd) as Record<string, string> : null;
-        const lksData: LksRecord | null = identity?.nama_lks
-          ? {
-              id: "local-lks",
-              nama_lks: identity.nama_lks,
-              kecamatan: identity.kecamatan,
-              desa: identity.desa,
-              alamat: identity.alamat,
-              status_lks: identity.status_lks || "Aktif",
-              workflow_status: tdd?.status_pengajuan === "DIAJUKAN" ? "menunggu_verifikasi" : "draft",
-              updated_at: new Date().toISOString(),
-            }
-          : null;
+        const { data, error } = await createClient()
+          .from("lks")
+          .select("id,nama_lks,kecamatan,desa,alamat,status_lks,workflow_status,updated_at")
+          .order("updated_at", { ascending: false });
+
+        if (error) throw error;
 
         if (!cancelled) {
-          setLks(lksData);
-          if (!lksData) {
-            setError("Belum ada data LKS di browser ini.");
-          }
+          setLksRows((data ?? []) as LksData[]);
           setLoading(false);
         }
       } catch (loadError) {
@@ -105,13 +95,12 @@ export default function LksPage() {
               SI-INUK / LKS
             </p>
 
-            <h1 className="mt-2 text-3xl font-bold text-slate-950 md:text-4xl">
-              Data LKS Saya
+              <h1 className="mt-2 text-3xl font-bold text-slate-950 md:text-4xl">
+                Data LKS Tersimpan
             </h1>
 
             <p className="mt-3 text-sm leading-6 text-slate-600">
-              Halaman ini menampilkan data LKS yang terhubung dengan akun yang
-              sedang login.
+              Halaman ini menampilkan data LKS yang dapat diakses oleh akun aktif melalui RLS.
             </p>
           </div>
 
@@ -138,7 +127,7 @@ export default function LksPage() {
               </p>
 
               <h2 className="mt-1 text-xl font-bold text-slate-900">
-                Data LKS terhubung ke akun
+                Data LKS dari Supabase
               </h2>
             </div>
 
@@ -161,43 +150,9 @@ export default function LksPage() {
                 {error}
               </p>
 
-              <p className="mt-2 text-sm text-amber-700">
-                Pastikan akun LKS sudah memiliki hubungan pada
-                <code className="mx-1 rounded bg-amber-100 px-1">
-                  profiles.lks_id
-                </code>
-                .
-              </p>
             </div>
-          ) : lks ? (
+          ) : lksRows.length > 0 ? (
             <>
-              <div className="flex flex-col gap-4 border-b border-slate-100 pb-5 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-xs font-bold uppercase tracking-[0.18em] text-slate-400">
-                    LKS terhubung
-                  </p>
-
-                  <h2 className="mt-2 text-xl font-bold text-slate-950">
-                    {getLksSummary(lks)}
-                  </h2>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <span className="inline-flex rounded-full bg-sky-100 px-2.5 py-1 text-xs font-semibold text-sky-700">
-                    {getWorkflowStatusLabel(
-                      lks.workflow_status || lks.status_lks,
-                    )}
-                  </span>
-
-                  <Link
-                    href="/lks/daftar"
-                    className="inline-flex w-fit rounded-xl bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800"
-                  >
-                    Lihat / Ubah
-                  </Link>
-                </div>
-              </div>
-
               <div className="mt-6 overflow-x-auto">
                 <table className="w-full min-w-[680px] text-left text-sm">
                   <thead>
@@ -213,50 +168,34 @@ export default function LksPage() {
                   </thead>
 
                   <tbody>
-                    <tr className="border-b border-slate-100">
-                      <td className="py-5 font-semibold text-slate-800">
-                        {getLksSummary(lks)}
-                      </td>
-
-                      <td className="py-5 text-slate-600">
-                        {lks.desa || "-"}, {lks.kecamatan || "-"}
-                        <br />
-                        <span className="text-xs text-slate-400">
-                          Manggarai Barat
-                        </span>
-                      </td>
-
-                      <td className="py-5">
-                        <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
-                          {lks.status_lks ||
-                            getWorkflowStatusLabel(lks.workflow_status)}
-                        </span>
-                      </td>
-
-                      <td className="max-w-xs py-5 text-slate-600">
-                        {lks.alamat || "Alamat belum diisi"}
-                      </td>
-
-                      <td className="py-5 text-right">
-                        <div className="flex flex-col items-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() => router.push("/lks/daftar")}
-                            className="font-semibold text-blue-700 hover:text-blue-800"
-                          >
-                            Lihat / Ubah
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => void downloadLksFile(lks)}
-                            className="font-semibold text-emerald-700 hover:text-emerald-800"
-                          >
-                            Download ZIP LKS
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
+                    {lksRows.map((lks) => (
+                      <tr key={lks.id} className="border-b border-slate-100">
+                        <td className="py-5 font-semibold text-slate-800">{getLksSummary(lks)}</td>
+                        <td className="py-5 text-slate-600">
+                          {lks.desa || "-"}, {lks.kecamatan || "-"}
+                          <br />
+                          <span className="text-xs text-slate-400">Manggarai Barat</span>
+                        </td>
+                        <td className="py-5">
+                          <span className="rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-semibold text-emerald-700">
+                            {lks.status_lks || getWorkflowStatusLabel(lks.workflow_status)}
+                          </span>
+                        </td>
+                        <td className="max-w-xs py-5 text-slate-600">{lks.alamat || "Alamat belum diisi"}</td>
+                        <td className="py-5 text-right">
+                          {localLksId === lks.id ? (
+                            <div className="flex flex-col items-end gap-2">
+                              <button type="button" onClick={() => router.push("/lks/daftar")} className="font-semibold text-blue-700 hover:text-blue-800">
+                                Lihat / Ubah
+                              </button>
+                              <button type="button" onClick={() => void downloadLksFile(lks)} className="font-semibold text-emerald-700 hover:text-emerald-800">
+                                Download ZIP LKS
+                              </button>
+                            </div>
+                          ) : <span className="text-xs text-slate-400">Tersimpan di backend</span>}
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -264,7 +203,7 @@ export default function LksPage() {
           ) : (
             <div className="rounded-xl border border-dashed border-slate-300 px-6 py-12 text-center">
               <p className="text-sm text-slate-500">
-                Belum ada data LKS yang terhubung dengan akun ini.
+                Belum ada data LKS yang dapat diakses dari Supabase.
               </p>
 
               <Link

@@ -1,12 +1,16 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useSyncExternalStore, type FormEvent } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import { createClient } from "@/lib/supabase/client";
 import { saveFileAttachment } from "../_lib/attachments";
 import {
   getSessionSnapshot,
+  readSessionData,
   subscribeSessionStorage,
+  writeSessionData,
 } from "../_lib/persistence";
+import { getCurrentLksId } from "../_lib/registration";
 
 const tahunSaatIni = new Date().getFullYear();
 
@@ -17,6 +21,8 @@ type PmRecord = {
   lakiLaki: string;
   bnba: File | null;
   bnbaFileName?: string;
+  bnbaStoragePath?: string;
+  bnbaStoredFileName?: string;
 };
 
 type PembinaanRecord = {
@@ -24,6 +30,7 @@ type PembinaanRecord = {
   tahun: string;
   status: "YA" | "TIDAK_ADA";
   jenis: string;
+  dbId?: string;
 };
 
 type BantuanRecord = {
@@ -32,10 +39,16 @@ type BantuanRecord = {
   status: "ADA" | "TIDAK_ADA";
   pemberi: string;
   jenis: string;
+  dbId?: string;
 };
 
 export default function PenerimaManfaatLksPage() {
   const router = useRouter();
+  const lksId = getCurrentLksId();
+  const isSaving = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const [pmId, setPmId] = useState<string | null>(null);
+  const [backendLoaded, setBackendLoaded] = useState(false);
 
   const savedSnapshot = useSyncExternalStore(
     subscribeSessionStorage,
@@ -47,6 +60,7 @@ export default function PenerimaManfaatLksPage() {
     penerima_manfaat?: unknown;
     pembinaan?: unknown;
     bantuan?: unknown;
+    pm_id?: unknown;
   } = {};
 
   if (savedSnapshot) {
@@ -80,6 +94,8 @@ export default function PenerimaManfaatLksPage() {
               typeof data.upload_bnba_pm === "string"
                 ? data.upload_bnba_pm
                 : "",
+            bnbaStoragePath: typeof data.bnba_storage_path === "string" ? data.bnba_storage_path : undefined,
+            bnbaStoredFileName: typeof data.bnba_file_name === "string" ? data.bnba_file_name : undefined,
           } as PmRecord;
         })
         .filter((item): item is PmRecord => item !== null);
@@ -121,6 +137,7 @@ export default function PenerimaManfaatLksPage() {
               typeof data.jenis_kegiatan_pembinaan === "string"
                 ? data.jenis_kegiatan_pembinaan
                 : "",
+            dbId: typeof data.db_id === "string" ? data.db_id : undefined,
           } as PembinaanRecord;
         })
         .filter((item): item is PembinaanRecord => item !== null);
@@ -164,6 +181,7 @@ export default function PenerimaManfaatLksPage() {
                 typeof data.jenis_bantuan === "string"
                   ? data.jenis_bantuan
                   : "",
+              dbId: typeof data.db_id === "string" ? data.db_id : undefined,
             } as BantuanRecord;
           })
           .filter((item): item is BantuanRecord => item !== null);
@@ -226,6 +244,7 @@ export default function PenerimaManfaatLksPage() {
                 typeof data.jenis_kegiatan_pembinaan === "string"
                   ? data.jenis_kegiatan_pembinaan
                   : "",
+              dbId: typeof data.db_id === "string" ? data.db_id : undefined,
             } as PembinaanRecord;
           })
           .filter((item): item is PembinaanRecord => item !== null)
@@ -253,30 +272,133 @@ export default function PenerimaManfaatLksPage() {
                 typeof data.jenis_bantuan === "string"
                   ? data.jenis_bantuan
                   : "",
+              dbId: typeof data.db_id === "string" ? data.db_id : undefined,
             } as BantuanRecord;
           })
           .filter((item): item is BantuanRecord => item !== null)
       : [];
 
-  const effectivePmRecords =
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadPm() {
+      if (!lksId) {
+        setBackendLoaded(true);
+        return;
+      }
+
+      const client = createClient();
+      const parentResult = await client
+        .from("lks_pm")
+        .select("id")
+        .eq("lks_id", lksId)
+        .maybeSingle();
+
+      if (cancelled) return;
+      if (parentResult.error) {
+        alert(`Gagal memuat data PM dari Supabase: ${parentResult.error.message}`);
+        setBackendLoaded(true);
+        return;
+      }
+
+      if (!parentResult.data) {
+        setBackendLoaded(true);
+        return;
+      }
+
+      const parentId = parentResult.data.id;
+      const [benefitsResult, developmentResult, aidResult] = await Promise.all([
+        client
+          .from("lks_pm_penerima_manfaat")
+          .select("id,tahun_data,pm_perempuan,pm_laki_laki,bnba_file_name,bnba_storage_path")
+          .eq("pm_id", parentId)
+          .order("tahun_data"),
+        client
+          .from("lks_pm_pembinaan")
+          .select("id,tahun,status,jenis_kegiatan_pembinaan")
+          .eq("pm_id", parentId)
+          .order("tahun"),
+        client
+          .from("lks_pm_bantuan")
+          .select("id,tahun,status,pemberi_bantuan,jenis_bantuan")
+          .eq("pm_id", parentId)
+          .order("tahun"),
+      ]);
+
+      if (cancelled) return;
+
+      const queryError = benefitsResult.error || developmentResult.error || aidResult.error;
+      if (queryError) {
+        alert(`Gagal memuat rincian PM dari Supabase: ${queryError.message}`);
+        setBackendLoaded(true);
+        return;
+      }
+
+      const cachedPmData = readSessionData<Record<string, unknown>>("si-inuk-lks-pm", {});
+      const localBenefits = Array.isArray(cachedPmData.penerima_manfaat)
+        ? cachedPmData.penerima_manfaat as Array<Record<string, unknown>>
+        : [];
+      const benefits = (benefitsResult.data ?? []).map((row, index) => {
+        const local = localBenefits.find((item) => String(item.tahun_data ?? "") === row.tahun_data);
+        return {
+          id: index + 1,
+          tahun: row.tahun_data,
+          perempuan: String(row.pm_perempuan ?? ""),
+          lakiLaki: String(row.pm_laki_laki ?? ""),
+          bnba: null,
+          bnbaFileName: typeof local?.upload_bnba_pm === "string" ? local.upload_bnba_pm : row.bnba_file_name || "",
+          bnbaStoragePath: row.bnba_storage_path || undefined,
+          bnbaStoredFileName: row.bnba_file_name || undefined,
+        } satisfies PmRecord;
+      });
+      const developments = (developmentResult.data ?? []).map((row, index) => ({
+        id: index + 1,
+        dbId: row.id,
+        tahun: row.tahun,
+        status: row.status,
+        jenis: row.jenis_kegiatan_pembinaan || "",
+      } satisfies PembinaanRecord));
+      const aids = (aidResult.data ?? []).map((row, index) => ({
+        id: index + 1,
+        dbId: row.id,
+        tahun: row.tahun,
+        status: row.status,
+        pemberi: row.pemberi_bantuan || "",
+        jenis: row.jenis_bantuan || "",
+      } satisfies BantuanRecord));
+
+      setPmId(parentId);
+      setPmRecords(benefits.length ? benefits : [{ id: 1, tahun: String(tahunSaatIni), perempuan: "", lakiLaki: "", bnba: null }]);
+      setPembinaanRecords(developments.length ? developments : [{ id: 1, tahun: String(tahunSaatIni), status: "TIDAK_ADA", jenis: "" }]);
+      setBantuanRecords(aids.length ? aids : [{ id: 1, tahun: String(tahunSaatIni), status: "TIDAK_ADA", pemberi: "", jenis: "" }]);
+      setBackendLoaded(true);
+    }
+
+    void loadPm();
+    return () => {
+      cancelled = true;
+    };
+  }, [lksId]);
+
+  const effectivePmRecords = !backendLoaded &&
     savedPmRecords.length > 0 &&
     pmRecords.length === 1 &&
     !pmRecords[0].perempuan &&
     !pmRecords[0].lakiLaki &&
     !pmRecords[0].bnba &&
     !pmRecords[0].bnbaFileName
-      ? savedPmRecords
+        ? savedPmRecords
       : pmRecords;
 
-  const effectivePembinaanRecords =
+      const effectivePembinaanRecords = !backendLoaded &&
     savedPembinaanRecords.length > 0 &&
     pembinaanRecords.length === 1 &&
     pembinaanRecords[0].status === "TIDAK_ADA" &&
     !pembinaanRecords[0].jenis
-      ? savedPembinaanRecords
+        ? savedPembinaanRecords
       : pembinaanRecords;
 
-  const effectiveBantuanRecords =
+      const effectiveBantuanRecords = !backendLoaded &&
     savedBantuanRecords.length > 0 &&
     bantuanRecords.length === 1 &&
     bantuanRecords[0].status === "TIDAK_ADA" &&
@@ -301,36 +423,272 @@ export default function PenerimaManfaatLksPage() {
           pm_laki_laki: Number(record.lakiLaki) || 0,
           jumlah_penerima_manfaat: jumlahPm(record),
           upload_bnba_pm: record.bnba?.name || record.bnbaFileName || "",
+          bnba_file_name: record.bnbaStoragePath ? record.bnbaStoredFileName || record.bnbaFileName || "" : null,
+          bnba_storage_path: record.bnbaStoragePath || null,
         };
       }),
     );
 
+    const pembinaan = effectivePembinaanRecords.map((record) => ({
+      db_id: record.dbId || "",
+      tahun: record.tahun,
+      status: record.status,
+      jenis_kegiatan_pembinaan:
+        record.status === "YA" ? record.jenis : "",
+    }));
+    const bantuan = effectiveBantuanRecords.map((record) => ({
+      db_id: record.dbId || "",
+      tahun: record.tahun,
+      status: record.status,
+      pemberi_bantuan: record.status === "ADA" ? record.pemberi : "",
+      jenis_bantuan: record.status === "ADA" ? record.jenis : "",
+    }));
+
+    setPembinaanRecords((records) => records.map((record) => ({
+      ...record,
+      dbId: pembinaan.find((item, index) => effectivePembinaanRecords[index]?.id === record.id)?.db_id || record.dbId,
+    })));
+    setBantuanRecords((records) => records.map((record) => ({
+      ...record,
+      dbId: bantuan.find((item, index) => effectiveBantuanRecords[index]?.id === record.id)?.db_id || record.dbId,
+    })));
+
     return {
+      pm_id: pmId || (typeof savedData.pm_id === "string" ? savedData.pm_id : ""),
       penerima_manfaat: penerimaManfaat,
-      pembinaan: effectivePembinaanRecords.map((record) => ({
-        tahun: record.tahun,
-        status: record.status,
-        jenis_kegiatan_pembinaan:
-          record.status === "YA" ? record.jenis : "",
-      })),
-      bantuan: effectiveBantuanRecords.map((record) => ({
-        tahun: record.tahun,
-        status: record.status,
-        pemberi_bantuan: record.status === "ADA" ? record.pemberi : "",
-        jenis_bantuan: record.status === "ADA" ? record.jenis : "",
-      })),
+      pembinaan,
+      bantuan,
     };
+  };
+
+  const persistPm = async () => {
+    if (isSaving.current) return false;
+    if (!lksId) {
+      alert("ID LKS belum tersedia. Simpan Identitas LKS terlebih dahulu.");
+      return false;
+    }
+
+    isSaving.current = true;
+    setSaving(true);
+
+    try {
+      const data = await buildPmData();
+      writeSessionData("si-inuk-lks-pm", data);
+
+      const client = createClient();
+      const { data: parent, error: parentError } = await client
+        .from("lks_pm")
+        .upsert({ lks_id: lksId }, { onConflict: "lks_id" })
+        .select("id")
+        .single();
+
+      if (parentError) {
+        alert(`Gagal menyimpan data induk PM ke Supabase: ${parentError.message}`);
+        return false;
+      }
+
+      const currentPmId = parent.id;
+      setPmId(currentPmId);
+      const cachedData = { ...data, pm_id: currentPmId };
+      writeSessionData("si-inuk-lks-pm", cachedData);
+
+      const benefits = (data.penerima_manfaat as Array<Record<string, unknown>>).map((item) => ({
+        pm_id: currentPmId,
+        tahun_data: String(item.tahun_data),
+        pm_perempuan: Number(item.pm_perempuan) || 0,
+        pm_laki_laki: Number(item.pm_laki_laki) || 0,
+        bnba_file_name: item.bnba_file_name,
+        bnba_storage_path: item.bnba_storage_path,
+      }));
+      const benefitRowsResult = await client
+        .from("lks_pm_penerima_manfaat")
+        .select("id,tahun_data")
+        .eq("pm_id", currentPmId);
+      if (benefitRowsResult.error) {
+        alert(`Gagal memeriksa tahun Penerima Manfaat di Supabase: ${benefitRowsResult.error.message}`);
+        return false;
+      }
+      if (benefits.length) {
+        const { error } = await client
+          .from("lks_pm_penerima_manfaat")
+          .upsert(benefits, { onConflict: "pm_id,tahun_data" });
+        if (error) {
+          alert(`Gagal menyimpan data Penerima Manfaat ke Supabase: ${error.message}`);
+          return false;
+        }
+      }
+      const selectedYears = new Set(benefits.map((item) => item.tahun_data));
+      const staleBenefitIds = (benefitRowsResult.data ?? [])
+        .filter((row) => !selectedYears.has(row.tahun_data))
+        .map((row) => row.id);
+      if (staleBenefitIds.length) {
+        const { error } = await client
+          .from("lks_pm_penerima_manfaat")
+          .delete()
+          .eq("pm_id", currentPmId)
+          .in("id", staleBenefitIds);
+        if (error) {
+          alert(`Data PM tersimpan, tetapi gagal menghapus tahun yang dikeluarkan: ${error.message}`);
+          return false;
+        }
+      }
+
+      const developmentRowsResult = await client
+        .from("lks_pm_pembinaan")
+        .select("id,tahun,status,jenis_kegiatan_pembinaan")
+        .eq("pm_id", currentPmId);
+      if (developmentRowsResult.error) {
+        alert(`Gagal memeriksa data Pembinaan di Supabase: ${developmentRowsResult.error.message}`);
+        return false;
+      }
+      const existingDevelopments = developmentRowsResult.data ?? [];
+      const usedDevelopmentIds = new Set<string>();
+      const savedDevelopmentIds: string[] = [];
+      for (const item of data.pembinaan as Array<Record<string, unknown>>) {
+        const tahun = String(item.tahun);
+        const status = String(item.status);
+        const jenis = status === "YA" ? String(item.jenis_kegiatan_pembinaan) : "";
+        const existing = (typeof item.db_id === "string" && item.db_id
+          ? existingDevelopments.find((row) => row.id === item.db_id && !usedDevelopmentIds.has(row.id))
+          : undefined) ?? existingDevelopments.find((row) =>
+          !usedDevelopmentIds.has(row.id) &&
+          row.tahun === tahun &&
+          row.status === status &&
+          (row.jenis_kegiatan_pembinaan || "") === jenis,
+        );
+
+        let rowId = existing?.id;
+        if (existing) {
+          const { error } = await client
+            .from("lks_pm_pembinaan")
+            .update({ tahun, status, jenis_kegiatan_pembinaan: jenis || null })
+            .eq("id", existing.id)
+            .eq("pm_id", currentPmId);
+          if (error) {
+            alert(`Gagal memperbarui data Pembinaan di Supabase: ${error.message}`);
+            return false;
+          }
+        } else {
+          const { data: inserted, error } = await client
+            .from("lks_pm_pembinaan")
+            .insert({ pm_id: currentPmId, tahun, status, jenis_kegiatan_pembinaan: jenis || null })
+            .select("id")
+            .single();
+          if (error) {
+            alert(`Gagal menyimpan data Pembinaan ke Supabase: ${error.message}`);
+            return false;
+          }
+          rowId = inserted.id;
+        }
+
+        if (rowId) {
+          usedDevelopmentIds.add(rowId);
+          savedDevelopmentIds.push(rowId);
+        }
+      }
+
+      const staleDevelopmentIds = existingDevelopments.map((row) => row.id).filter((id) => !usedDevelopmentIds.has(id));
+      if (staleDevelopmentIds.length) {
+        const { error } = await client.from("lks_pm_pembinaan").delete().eq("pm_id", currentPmId).in("id", staleDevelopmentIds);
+        if (error) {
+          alert(`Data PM tersimpan, tetapi gagal memperbarui daftar Pembinaan: ${error.message}`);
+          return false;
+        }
+      }
+
+      const aidRowsResult = await client
+        .from("lks_pm_bantuan")
+        .select("id,tahun,status,pemberi_bantuan,jenis_bantuan")
+        .eq("pm_id", currentPmId);
+      if (aidRowsResult.error) {
+        alert(`Gagal memeriksa data Bantuan di Supabase: ${aidRowsResult.error.message}`);
+        return false;
+      }
+      const existingAids = aidRowsResult.data ?? [];
+      const usedAidIds = new Set<string>();
+      const savedAidIds: string[] = [];
+      for (const item of data.bantuan as Array<Record<string, unknown>>) {
+        const tahun = String(item.tahun);
+        const status = String(item.status);
+        const pemberi = status === "ADA" ? String(item.pemberi_bantuan) : "";
+        const jenis = status === "ADA" ? String(item.jenis_bantuan) : "";
+        const existing = (typeof item.db_id === "string" && item.db_id
+          ? existingAids.find((row) => row.id === item.db_id && !usedAidIds.has(row.id))
+          : undefined) ?? existingAids.find((row) =>
+          !usedAidIds.has(row.id) &&
+          row.tahun === tahun &&
+          row.status === status &&
+          (row.pemberi_bantuan || "") === pemberi &&
+          (row.jenis_bantuan || "") === jenis,
+        );
+
+        let rowId = existing?.id;
+        if (existing) {
+          const { error } = await client
+            .from("lks_pm_bantuan")
+            .update({ tahun, status, pemberi_bantuan: pemberi || null, jenis_bantuan: jenis || null })
+            .eq("id", existing.id)
+            .eq("pm_id", currentPmId);
+          if (error) {
+            alert(`Gagal memperbarui data Bantuan di Supabase: ${error.message}`);
+            return false;
+          }
+        } else {
+          const { data: inserted, error } = await client
+            .from("lks_pm_bantuan")
+            .insert({ pm_id: currentPmId, tahun, status, pemberi_bantuan: pemberi || null, jenis_bantuan: jenis || null })
+            .select("id")
+            .single();
+          if (error) {
+            alert(`Gagal menyimpan data Bantuan ke Supabase: ${error.message}`);
+            return false;
+          }
+          rowId = inserted.id;
+        }
+
+        if (rowId) {
+          usedAidIds.add(rowId);
+          savedAidIds.push(rowId);
+        }
+      }
+
+      const staleAidIds = existingAids.map((row) => row.id).filter((id) => !usedAidIds.has(id));
+      if (staleAidIds.length) {
+        const { error } = await client.from("lks_pm_bantuan").delete().eq("pm_id", currentPmId).in("id", staleAidIds);
+        if (error) {
+          alert(`Data PM tersimpan, tetapi gagal memperbarui daftar Bantuan: ${error.message}`);
+          return false;
+        }
+      }
+
+      const persistedData = {
+        ...cachedData,
+        pembinaan: (data.pembinaan as Array<Record<string, unknown>>).map((item, index) => ({ ...item, db_id: savedDevelopmentIds[index] || "" })),
+        bantuan: (data.bantuan as Array<Record<string, unknown>>).map((item, index) => ({ ...item, db_id: savedAidIds[index] || "" })),
+      };
+      writeSessionData("si-inuk-lks-pm", persistedData);
+      setPembinaanRecords((records) => records.map((record, index) => ({ ...record, dbId: savedDevelopmentIds[index] || record.dbId })));
+      setBantuanRecords((records) => records.map((record, index) => ({ ...record, dbId: savedAidIds[index] || record.dbId })));
+
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Terjadi kesalahan yang tidak diketahui.";
+      alert(`Gagal menyimpan data PM: ${message}`);
+      return false;
+    } finally {
+      isSaving.current = false;
+      setSaving(false);
+    }
   };
 
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
-    const data = await buildPmData();
-
-    localStorage.setItem("si-inuk-lks-pm", JSON.stringify(data));
+    const saved = await persistPm();
+    if (!saved) return;
 
     alert(
-      "Data Penerima Manfaat, Pembinaan, dan Bantuan LKS berhasil disimpan sementara.",
+      "Data PM tersimpan di Supabase. File BNBA masih tersimpan di browser.",
     );
   };
 
@@ -384,9 +742,8 @@ export default function PenerimaManfaatLksPage() {
       }
     }
 
-    const data = await buildPmData();
-
-    localStorage.setItem("si-inuk-lks-pm", JSON.stringify(data));
+    const saved = await persistPm();
+    if (!saved) return;
 
     router.push("/lks/daftar/sarpras");
   };
@@ -422,7 +779,7 @@ export default function PenerimaManfaatLksPage() {
           </div>
         </div>
 
-        <form onSubmit={handleSubmit} className="space-y-6">
+        <form key={backendLoaded ? "backend-loaded" : "local-cache"} onSubmit={handleSubmit} className="space-y-6">
           <section className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
@@ -988,6 +1345,7 @@ export default function PenerimaManfaatLksPage() {
           <div className="flex flex-wrap gap-3">
             <button
               type="submit"
+              disabled={saving}
               className="rounded-lg bg-slate-900 px-5 py-2.5 font-medium text-white hover:bg-slate-800"
             >
               Simpan Data
@@ -995,15 +1353,16 @@ export default function PenerimaManfaatLksPage() {
 
             <button
               type="button"
-              onClick={() => router.push("/lks/daftar/layanan")}
+              onClick={() => router.push("/lks/daftar/sdm")}
               className="rounded-lg border border-slate-300 bg-white px-5 py-2.5 font-medium text-slate-700 hover:bg-slate-50"
             >
-              Kembali ke Layanan
+              Kembali ke SDM
             </button>
 
             <button
               type="button"
               onClick={handleNext}
+              disabled={saving}
               className="rounded-lg bg-blue-600 px-5 py-2.5 font-medium text-white hover:bg-blue-700"
             >
               Lanjut ke Sarpras

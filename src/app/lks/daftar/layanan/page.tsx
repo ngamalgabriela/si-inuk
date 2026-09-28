@@ -1,11 +1,14 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useState, useSyncExternalStore, type FormEvent } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import { createClient } from "@/lib/supabase/client";
 import {
   getSessionSnapshot,
   subscribeSessionStorage,
+  writeSessionData,
 } from "../_lib/persistence";
+import { getCurrentLksId } from "../_lib/registration";
 
 const wilayah: Record<string, string[]> = {
   Komodo: [
@@ -235,6 +238,11 @@ const sistemPelayanan = [
 
 export default function LayananLksPage() {
   const router = useRouter();
+  const lksId = getCurrentLksId();
+  const isSaving = useRef(false);
+  const [saving, setSaving] = useState(false);
+  const [backendLoaded, setBackendLoaded] = useState(false);
+  const [backendData, setBackendData] = useState<Record<string, string | string[]>>({});
   const [kecamatan, setKecamatan] = useState("");
   const [desa, setDesa] = useState("");
   const [wilayahTerpilih, setWilayahTerpilih] = useState<
@@ -247,19 +255,82 @@ export default function LayananLksPage() {
     () => ""
   );
 
-  let savedData: Record<string, string | string[]> = {};
+  let localSavedData: Record<string, string | string[]> = {};
 
   if (savedSnapshot) {
     try {
-      savedData = JSON.parse(savedSnapshot) as Record<string, string | string[]>;
+      localSavedData = JSON.parse(savedSnapshot) as Record<string, string | string[]>;
     } catch {
-      savedData = {};
+      localSavedData = {};
     }
   }
+  const savedData = { ...localSavedData, ...backendData };
 
   const [draftData, setDraftData] = useState<
     Record<string, string | string[]>
   >({});
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadLayanan() {
+      if (!lksId) {
+        setBackendLoaded(true);
+        return;
+      }
+
+      const client = createClient();
+      const parentResult = await client
+        .from("lks_layanan")
+        .select("id")
+        .eq("lks_id", lksId)
+        .maybeSingle();
+
+      if (cancelled) return;
+      if (parentResult.error) {
+        alert(`Gagal memuat data Layanan dari Supabase: ${parentResult.error.message}`);
+        setBackendLoaded(true);
+        return;
+      }
+      if (!parentResult.data) {
+        setBackendLoaded(true);
+        return;
+      }
+
+      const layananId = parentResult.data.id;
+      const [jenisResult, sasaranResult, permasalahanResult, sistemResult, wilayahResult] = await Promise.all([
+        client.from("lks_layanan_jenis").select("jenis_pelayanan").eq("layanan_id", layananId),
+        client.from("lks_layanan_sasaran").select("sasaran_pelayanan").eq("layanan_id", layananId),
+        client.from("lks_layanan_permasalahan").select("permasalahan_sosial").eq("layanan_id", layananId),
+        client.from("lks_layanan_sistem").select("sistem_pelayanan").eq("layanan_id", layananId),
+        client.from("lks_layanan_wilayah").select("kecamatan,desa").eq("layanan_id", layananId),
+      ]);
+
+      if (cancelled) return;
+      const queryError = jenisResult.error || sasaranResult.error || permasalahanResult.error || sistemResult.error || wilayahResult.error;
+      if (queryError) {
+        alert(`Gagal memuat rincian Layanan dari Supabase: ${queryError.message}`);
+      } else {
+        const wilayahRows = wilayahResult.data ?? [];
+        const wilayah = wilayahRows.map((row) => ({ kecamatan: row.kecamatan, desa: row.desa }));
+        setBackendData({
+          jenis_pelayanan: (jenisResult.data ?? []).map((row) => row.jenis_pelayanan),
+          sasaran_pelayanan: (sasaranResult.data ?? []).map((row) => row.sasaran_pelayanan),
+          permasalahan_sosial: (permasalahanResult.data ?? []).map((row) => row.permasalahan_sosial),
+          sistem_pelayanan: (sistemResult.data ?? []).map((row) => row.sistem_pelayanan),
+          cakupan_wilayah: JSON.stringify(wilayah),
+        });
+        setWilayahTerpilih(wilayah);
+      }
+
+      setBackendLoaded(true);
+    }
+
+    void loadLayanan();
+    return () => {
+      cancelled = true;
+    };
+  }, [lksId]);
 
   const effectiveKecamatan =
     kecamatan ||
@@ -317,10 +388,8 @@ export default function LayananLksPage() {
   const effectiveWilayahTerpilih =
     wilayahTerpilih.length > 0 ? wilayahTerpilih : savedCakupan;
 
-  const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-
-    const formData = new FormData(e.currentTarget);
+  const collectLayananData = (form: HTMLFormElement) => {
+    const formData = new FormData(form);
     const data: Record<string, string | string[]> = {};
 
     formData.forEach((value, key) => {
@@ -338,13 +407,135 @@ export default function LayananLksPage() {
     });
 
     data.cakupan_wilayah = JSON.stringify(effectiveWilayahTerpilih);
-
-    localStorage.setItem("si-inuk-lks-layanan", JSON.stringify(data));
-
-    alert("Data Layanan LKS berhasil disimpan sementara.");
+    return data;
   };
 
-  const handleNext = () => {
+  const syncLayananChoices = async (
+    client: ReturnType<typeof createClient>,
+    layananId: string,
+    table: "lks_layanan_jenis" | "lks_layanan_sasaran" | "lks_layanan_permasalahan" | "lks_layanan_sistem",
+    column: string,
+    values: string[],
+  ) => {
+    if (values.length) {
+      const rows = values.map((value) => ({ layanan_id: layananId, [column]: value }));
+      const { error } = await client.from(table).upsert(rows, { onConflict: `layanan_id,${column}` });
+      if (error) return error.message;
+    }
+
+    const { data: existing, error: selectError } = await client
+      .from(table)
+      .select(`id,${column}`)
+      .eq("layanan_id", layananId);
+    if (selectError) return selectError.message;
+
+    const selectedValues = new Set(values);
+    for (const row of existing ?? []) {
+      const item = row as unknown as Record<string, unknown>;
+      if (!selectedValues.has(String(item[column]))) {
+        const { error } = await client.from(table).delete().eq("id", String(item.id));
+        if (error) return error.message;
+      }
+    }
+
+    return null;
+  };
+
+  const persistLayanan = async (data: Record<string, string | string[]>) => {
+    if (isSaving.current) return false;
+    if (!lksId) {
+      alert("ID LKS belum tersedia. Simpan Identitas LKS terlebih dahulu.");
+      return false;
+    }
+
+    isSaving.current = true;
+    setSaving(true);
+
+    try {
+      writeSessionData("si-inuk-lks-layanan", data);
+      const client = createClient();
+      const { data: parent, error: parentError } = await client
+        .from("lks_layanan")
+        .upsert({ lks_id: lksId }, { onConflict: "lks_id" })
+        .select("id")
+        .single();
+
+      if (parentError) {
+        alert(`Gagal menyimpan data induk Layanan ke Supabase: ${parentError.message}`);
+        return false;
+      }
+
+      const choiceGroups = [
+        ["lks_layanan_jenis", "jenis_pelayanan"],
+        ["lks_layanan_sasaran", "sasaran_pelayanan"],
+        ["lks_layanan_permasalahan", "permasalahan_sosial"],
+        ["lks_layanan_sistem", "sistem_pelayanan"],
+      ] as const;
+
+      for (const [table, column] of choiceGroups) {
+        const value = data[column];
+        const values = Array.isArray(value) ? value : value ? [value] : [];
+        const syncError = await syncLayananChoices(client, parent.id, table, column, values);
+        if (syncError) {
+          alert(`Gagal menyimpan ${column} ke Supabase: ${syncError}`);
+          return false;
+        }
+      }
+
+      const wilayah = effectiveWilayahTerpilih;
+      if (wilayah.length) {
+        const { error } = await client
+          .from("lks_layanan_wilayah")
+          .upsert(wilayah.map((item) => ({ layanan_id: parent.id, ...item })), {
+            onConflict: "layanan_id,kecamatan,desa",
+          });
+        if (error) {
+          alert(`Gagal menyimpan cakupan wilayah ke Supabase: ${error.message}`);
+          return false;
+        }
+      }
+
+      const { data: existingWilayah, error: wilayahError } = await client
+        .from("lks_layanan_wilayah")
+        .select("id,kecamatan,desa")
+        .eq("layanan_id", parent.id);
+      if (wilayahError) {
+        alert(`Gagal memeriksa cakupan wilayah di Supabase: ${wilayahError.message}`);
+        return false;
+      }
+
+      const selectedWilayah = new Set(wilayah.map((item) => `${item.kecamatan}\u0000${item.desa}`));
+      for (const row of existingWilayah ?? []) {
+        if (!selectedWilayah.has(`${row.kecamatan}\u0000${row.desa}`)) {
+          const { error } = await client.from("lks_layanan_wilayah").delete().eq("id", row.id);
+          if (error) {
+            alert(`Gagal memperbarui cakupan wilayah di Supabase: ${error.message}`);
+            return false;
+          }
+        }
+      }
+
+      return true;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Terjadi kesalahan yang tidak diketahui.";
+      alert(`Gagal menyimpan Layanan: ${message}`);
+      return false;
+    } finally {
+      isSaving.current = false;
+      setSaving(false);
+    }
+  };
+
+  const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const data = collectLayananData(e.currentTarget);
+    const saved = await persistLayanan(data);
+    if (!saved) return;
+
+    alert("Data Layanan tersimpan di Supabase.");
+  };
+
+  const handleNext = async () => {
     const form = document.getElementById(
       "layanan-form"
     ) as HTMLFormElement | null;
@@ -378,31 +569,10 @@ export default function LayananLksPage() {
       return;
     }
 
-    const formData = new FormData(form);
-    const data: Record<string, string | string[]> = {};
+    const saved = await persistLayanan(collectLayananData(form));
+    if (!saved) return;
 
-    formData.forEach((value, key) => {
-      if (value instanceof File) return;
-
-      const existing = data[key];
-
-      if (existing) {
-        data[key] = Array.isArray(existing)
-          ? [...existing, value]
-          : [existing, value];
-      } else {
-        data[key] = value;
-      }
-    });
-
-    data.cakupan_wilayah = JSON.stringify(effectiveWilayahTerpilih);
-
-    localStorage.setItem(
-      "si-inuk-lks-layanan",
-      JSON.stringify(data)
-    );
-
-    router.push("/lks/daftar/pm");
+    router.push("/lks/daftar/tanda-daftar");
   };
 
   const tambahWilayah = () => {
@@ -459,7 +629,7 @@ export default function LayananLksPage() {
           </div>
         </div>
 
-        <form id="layanan-form" onSubmit={handleSubmit} className="space-y-6">
+        <form key={backendLoaded ? "backend-loaded" : "local-cache"} id="layanan-form" onSubmit={handleSubmit} className="space-y-6">
           <section className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-slate-200">
             <h2 className="text-xl font-semibold text-slate-900">
               Jenis Pelayanan
@@ -720,6 +890,7 @@ export default function LayananLksPage() {
           <div className="flex flex-wrap gap-3">
   <button
     type="submit"
+    disabled={saving}
     className="rounded-lg bg-slate-900 px-5 py-2.5 font-medium text-white hover:bg-slate-800"
   >
     Simpan Data Layanan
@@ -727,18 +898,19 @@ export default function LayananLksPage() {
 
   <button
     type="button"
-    onClick={() => router.push("/lks/daftar/sdm")}
+    onClick={() => router.push("/lks/daftar/sarpras")}
     className="rounded-lg border border-slate-300 bg-white px-5 py-2.5 font-medium text-slate-700 hover:bg-slate-50"
   >
-    Kembali ke SDM
+    Kembali ke Sarpras
   </button>
 
   <button
     type="button"
     onClick={handleNext}
+    disabled={saving}
     className="rounded-lg bg-blue-600 px-5 py-2.5 font-medium text-white hover:bg-blue-700"
   >
-    Lanjut ke PM
+    Lanjut ke Tanda Daftar Dinas
   </button>
 </div>
         </form>

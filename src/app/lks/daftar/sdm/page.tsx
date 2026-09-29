@@ -1,7 +1,13 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState, useSyncExternalStore, type FormEvent } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type FormEvent,
+} from "react";
 import { createClient } from "@/lib/supabase/client";
 import { saveFileAttachment } from "../_lib/attachments";
 import {
@@ -16,6 +22,7 @@ export default function SdmLksPage() {
   const router = useRouter();
   const lksId = getCurrentLksId();
   const isSaving = useRef(false);
+
   const [saving, setSaving] = useState(false);
   const [backendData, setBackendData] = useState<Record<string, string>>({});
   const [backendLoaded, setBackendLoaded] = useState(false);
@@ -24,13 +31,17 @@ export default function SdmLksPage() {
   const savedSnapshot = useSyncExternalStore(
     subscribeSessionStorage,
     () => getSessionSnapshot("si-inuk-lks-sdm"),
-    () => ""
+    () => "",
   );
 
   const localSavedData = savedSnapshot
     ? readSessionData<Record<string, string>>("si-inuk-lks-sdm", {})
     : {};
-  const savedData = { ...localSavedData, ...backendData };
+
+  const savedData = {
+    ...localSavedData,
+    ...backendData,
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -43,7 +54,9 @@ export default function SdmLksPage() {
 
       const { data, error } = await createClient()
         .from("lks_sdm")
-        .select("nama_pimpinan,email,data_sdm_file_name,data_sdm_storage_path,sertifikasi_file_name,sertifikasi_storage_path")
+        .select(
+          "nama_pimpinan,email,data_sdm_file_name,data_sdm_storage_path,sertifikasi_file_name,sertifikasi_storage_path",
+        )
         .eq("lks_id", lksId)
         .maybeSingle();
 
@@ -52,7 +65,7 @@ export default function SdmLksPage() {
       if (error) {
         alert(`Gagal memuat data SDM dari Supabase: ${error.message}`);
       } else if (data) {
-        setBackendData({
+        const loadedData: Record<string, string> = {
           ...(typeof data.nama_pimpinan === "string"
             ? { nama_pimpinan: data.nama_pimpinan }
             : {}),
@@ -75,6 +88,16 @@ export default function SdmLksPage() {
                   data.sertifikasi_storage_path,
               }
             : {}),
+        };
+
+        setBackendData(loadedData);
+
+        writeSessionData("si-inuk-lks-sdm", {
+          ...readSessionData<Record<string, string>>(
+            "si-inuk-lks-sdm",
+            {},
+          ),
+          ...loadedData,
         });
       }
 
@@ -101,27 +124,47 @@ export default function SdmLksPage() {
 
     try {
       const formData = new FormData(form);
-      const data: Record<string, string> = { ...savedData };
+
+      const data: Record<string, string> = {
+        ...savedData,
+      };
 
       for (const [key, value] of Array.from(formData.entries())) {
         if (value instanceof File) {
-          data[key] = value.name;
-
-          if (value.size > 0) {
-            const existingPath = data[`_${key}_storage_path`];
-            const existingName = data[`_${key}_file_name`];
-
-            if (!existingPath || existingName !== value.name) {
-              const storagePath = await saveFileAttachment(
-                "sdm",
-                key,
-                value,
-              );
-
-              data[`_${key}_file_name`] = value.name;
-              data[`_${key}_storage_path`] = storagePath;
-            }
+          /*
+           * File input kosong tetap menghasilkan File dengan size 0.
+           * Jangan sampai kondisi ini menghapus nama file lama
+           * yang sudah tersimpan di Supabase.
+           */
+          if (value.size === 0) {
+            continue;
           }
+
+          const existingPath = data[`_${key}_storage_path`];
+          const existingName = data[`_${key}_file_name`];
+
+          /*
+           * Jika file yang dipilih sama dengan file yang sudah tersimpan,
+           * gunakan file lama dan jangan upload ulang.
+           */
+          if (existingPath && existingName === value.name) {
+            data[key] = existingName;
+            continue;
+          }
+
+          /*
+           * File baru: upload ke Supabase Storage dan simpan
+           * storage path yang dikembalikan oleh saveFileAttachment().
+           */
+          const storagePath = await saveFileAttachment(
+            "sdm",
+            key,
+            value,
+          );
+
+          data[key] = value.name;
+          data[`_${key}_file_name`] = value.name;
+          data[`_${key}_storage_path`] = storagePath;
         } else {
           data[key] = value;
         }
@@ -134,18 +177,24 @@ export default function SdmLksPage() {
             lks_id: lksId,
             nama_pimpinan: data.nama_pimpinan || null,
             email: data.email || null,
+
             data_sdm_file_name: data._data_sdm_storage_path
               ? data._data_sdm_file_name
               : null,
+
             data_sdm_storage_path:
               data._data_sdm_storage_path || null,
+
             sertifikasi_file_name: data._sertifikasi_storage_path
               ? data._sertifikasi_file_name
               : null,
+
             sertifikasi_storage_path:
               data._sertifikasi_storage_path || null,
           },
-          { onConflict: "lks_id" },
+          {
+            onConflict: "lks_id",
+          },
         );
 
       if (error) {
@@ -153,6 +202,10 @@ export default function SdmLksPage() {
         return false;
       }
 
+      /*
+       * Simpan hasil akhir yang sudah memiliki nama file dan
+       * storage path Supabase ke session cache.
+       */
       writeSessionData("si-inuk-lks-sdm", data);
       setBackendData(data);
 
@@ -183,7 +236,7 @@ export default function SdmLksPage() {
 
   const handleNext = async () => {
     const form = document.getElementById(
-      "sdm-form"
+      "sdm-form",
     ) as HTMLFormElement | null;
 
     if (!form) return;
@@ -204,9 +257,11 @@ export default function SdmLksPage() {
       <div className="mx-auto max-w-6xl">
         <div className="mb-8">
           <p className="text-sm font-medium text-slate-500">SI-INUK</p>
+
           <h1 className="mt-1 text-3xl font-bold text-slate-900">
             Pendaftaran LKS — SDM
           </h1>
+
           <p className="mt-2 text-slate-600">
             Data pimpinan dan dokumen struktur kepengurusan Lembaga
             Kesejahteraan Sosial.

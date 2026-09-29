@@ -20,6 +20,17 @@ export default async function LksDashboard() {
     .eq("created_by", user.id)
     .maybeSingle();
 
+  const { data: tandaDaftar } = lks
+    ? await supabase
+        .from("lks_tanda_daftar")
+        .select("status_pengajuan")
+        .eq("lks_id", lks.id)
+        .maybeSingle()
+    : { data: null };
+
+  const statusPengajuan =
+    tandaDaftar?.status_pengajuan || lks?.workflow_status || "draft";
+
   const modules = [
     {
       title: "Identitas LKS",
@@ -99,7 +110,7 @@ export default async function LksDashboard() {
               </span>
 
               <span className="rounded-full bg-slate-100 px-4 py-2 text-sm font-medium text-slate-700">
-                Pengajuan: {lks?.workflow_status || "draft"}
+                Pengajuan: {statusPengajuan}
               </span>
             </div>
           </div>

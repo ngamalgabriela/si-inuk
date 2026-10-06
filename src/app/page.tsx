@@ -1,3 +1,4 @@
+import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import SiInukDashboard from "./_components/si-inuk-dashboard";
 import LksDashboard from "./_components/lks-dashboard";
@@ -10,7 +11,7 @@ export default async function Home() {
   } = await supabase.auth.getUser();
 
   if (!user) {
-    return null;
+    redirect("/login");
   }
 
   const { data: profile } = await supabase

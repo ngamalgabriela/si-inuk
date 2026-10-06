@@ -25,13 +25,17 @@ export default async function LksDashboard() {
   const { data: tandaDaftar } = lks
     ? await supabase
         .from("lks_tanda_daftar")
-        .select("status_pengajuan")
+        .select("status_pengajuan,dokumen_tdd_file_name,dokumen_tdd_storage_path")
         .eq("lks_id", lks.id)
         .maybeSingle()
     : { data: null };
 
   const statusPengajuan =
     tandaDaftar?.status_pengajuan || lks?.workflow_status || "draft";
+
+  const { data: tddSignedUrl } = tandaDaftar?.dokumen_tdd_storage_path
+    ? await supabase.storage.from("lks-documents").createSignedUrl(tandaDaftar.dokumen_tdd_storage_path, 3600)
+    : { data: null };
 
   const modules = [
     {
@@ -123,6 +127,30 @@ export default async function LksDashboard() {
             </div>
           </div>
         </section>
+
+        {tddSignedUrl?.signedUrl ? (
+          <section className="mb-8 rounded-2xl border border-emerald-200 bg-emerald-50 p-6">
+            <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="font-semibold text-emerald-900">Tanda Daftar Dinas</h2>
+                <p className="mt-1 text-sm text-emerald-800">
+                  Dokumen TDD resmi sudah diterbitkan dan dapat diunduh.
+                </p>
+                <p className="mt-1 text-xs text-emerald-700">
+                  {tandaDaftar?.dokumen_tdd_file_name}
+                </p>
+              </div>
+              <a
+                href={tddSignedUrl.signedUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex shrink-0 items-center justify-center rounded-lg bg-emerald-700 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-800"
+              >
+                Download Tanda Daftar Dinas
+              </a>
+            </div>
+          </section>
+        ) : null}
 
         {!lks && (
           <section className="mb-8 rounded-2xl border border-amber-200 bg-amber-50 p-6">

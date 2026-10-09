@@ -1729,6 +1729,51 @@ export default function SiInukDashboard() {
 
           ) : null}
 
+          {activeTab === "Peta Persebaran" ? (
+            <section className="mb-6 rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_10px_24px_rgba(15,23,42,0.05)]">
+              <div className="mb-5">
+                <p className="text-[10px] font-bold uppercase tracking-[0.26em] text-teal-700">Lokasi terdata</p>
+                <h3 className="mt-2 text-xl font-semibold text-slate-900">Persebaran LKS</h3>
+                <p className="mt-1 text-sm text-slate-500">Lokasi menggunakan koordinat tersimpan atau alamat/wilayah LKS.</p>
+              </div>
+              <PsksMap records={mapRecords} />
+            </section>
+          ) : null}
+
+          {activeTab === "Modul Aktif" ? (
+            <section className="mb-6">
+              <div className="mb-5">
+                <p className="text-[10px] font-bold uppercase tracking-[0.26em] text-teal-700">Ekosistem PSKS</p>
+                <h3 className="mt-2 text-xl font-semibold text-slate-900">Modul tersedia</h3>
+                <p className="mt-1 text-sm text-slate-500">Status modul dan akses ke layanan SI-INUK.</p>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                {moduleLinks.map((module) => (
+                  <article key={module.name} className="flex flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-[0_10px_24px_rgba(15,23,42,0.05)]">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h4 className="text-lg font-semibold text-slate-900">{module.name}</h4>
+                        <p className="mt-1 text-sm text-slate-500">{module.short}</p>
+                      </div>
+                      <span className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${module.active ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>
+                        {module.active ? "Aktif" : "Disiapkan"}
+                      </span>
+                    </div>
+                    <p className="mt-4 flex-1 text-sm leading-6 text-slate-600">{module.description}</p>
+                    <div className="mt-5 border-t border-slate-100 pt-4">
+                      {module.active ? (
+                        <Link href={module.href} className="text-sm font-semibold text-sky-700 hover:text-sky-800">
+                          Buka modul →
+                        </Link>
+                      ) : (
+                        <span className="text-sm font-medium text-slate-400">Belum tersedia</span>
+                      )}
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          ) : null}
 
 
           {activeTab === "Ringkasan" && showPmAnalytics ? (
